@@ -6,7 +6,7 @@ import yfinance as yf
 # 設定
 # =========================
 st.set_page_config(page_title="美股分析儀表板（全手動分數版）", layout="wide")
-st.title("📊 美股分析儀表板（政策 & 成長手動輸入版）")
+st.title("📊 美股分析儀表板（政策 & 護城河 & 成長手動輸入版）")
 
 # =========================
 # 產業股票池
@@ -104,8 +104,9 @@ def compute_scores(row,manual_scores=None):
     ROE_score=min(max(ROE/0.3*100,0),100) if ROE else 50
     symbol=row["股票"]
     
-    Moat_score = calculate_moat(symbol)
+    # 政策/護城河/成長全手動
     Policy_score = 50
+    Moat_score = calculate_moat(symbol)
     Growth_score = 50
     
     if manual_scores and symbol in manual_scores:
@@ -134,14 +135,15 @@ if mode=="單一股票分析":
             funds_df.loc[funds_df["指標"]==col,"數值"]=funds_df.loc[funds_df["指標"]==col,"數值"].apply(format_large_numbers)
     st.table(funds_df)
     
-    # 手動輸入分數
+    # 手動輸入分數 (唯一 key)
     st.subheader("手動輸入分數")
-    manual_policy = st.number_input(f"{symbol} 政策分數", 0, 100, 50)
-    manual_moat = st.number_input(f"{symbol} 護城河分數", 0, 100, calculate_moat(symbol))
-    manual_growth = st.number_input(f"{symbol} 成長分數", 0, 100, 50)
+    manual_policy = st.number_input("政策分數", 0, 100, 50, key=f"{symbol}_policy")
+    manual_moat = st.number_input("護城河分數", 0, 100, calculate_moat(symbol), key=f"{symbol}_moat")
+    manual_growth = st.number_input("成長分數", 0, 100, 50, key=f"{symbol}_growth")
     
     PE_s,ROE_s,Policy_s,Moat_s,Growth_s,Total_s = compute_scores(
-        {"股票":symbol,"PE":funds_df.loc[funds_df["指標"]=="PE","數值"].values[0],
+        {"股票":symbol,
+         "PE":funds_df.loc[funds_df["指標"]=="PE","數值"].values[0],
          "ROE":funds_df.loc[funds_df["指標"]=="ROE","數值"].values[0]},
         manual_scores={symbol:{"Policy_score":manual_policy,"Moat_score":manual_moat,"Growth_score":manual_growth}}
     )
@@ -158,15 +160,14 @@ elif mode=="產業共同比較":
     sector=st.sidebar.selectbox("選擇產業",list(SECTORS.keys()),index=0)
     st.subheader(f"🏭 {sector} 產業比較")
     
-    # 手動輸入分數
-    st.sidebar.subheader("手動調整分數 (可直接輸入數字)")
+    # 手動輸入分數 (唯一 key)
+    st.sidebar.subheader("手動調整分數")
     manual_scores = {}
     for symbol in SECTORS[sector]:
         Moat_default = calculate_moat(symbol)
-        st.sidebar.markdown(f"**{symbol} 調整**")
-        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, 50)
-        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數", 0, 100, int(Moat_default))
-        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數", 0, 100, 50)
+        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, 50, key=f"{symbol}_policy")
+        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數", 0, 100, int(Moat_default), key=f"{symbol}_moat")
+        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數", 0, 100, 50, key=f"{symbol}_growth")
         manual_scores[symbol] = {
             "Policy_score": manual_policy,
             "Moat_score": manual_moat,
