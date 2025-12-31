@@ -95,7 +95,7 @@ def compute_scores(row,manual_scores=None,sector_avg_pe=None,sector_avg_roe=None
         ROE_score = min(max(ROE / sector_avg_roe *100,0),100)
     
     FCF=row.get("FCF")
-    if FCF is not None and FCF<0:
+    if FCF is not None and isinstance(FCF,(int,float)) and FCF<0:
         ROE_score *=0.8
     
     symbol=row["股票"]
@@ -134,7 +134,6 @@ if mode=="單一股票分析":
     symbol=st.sidebar.text_input("輸入美股代碼","NVDA")
     st.subheader(f"📌 {symbol} 分析")
     
-    # 找到股票所屬產業
     sector_found=None
     for sector_name,stocks in SECTORS.items():
         if symbol in stocks:
@@ -166,7 +165,7 @@ if mode=="單一股票分析":
     manual_moat = st.number_input("護城河分數", 0, 100, key=f"{symbol}_moat")
     manual_growth = st.number_input("成長分數", 0, 100, key=f"{symbol}_growth")
     
-    # 計算行業平均PE/ROE
+    # 行業平均
     sector_avg_pe,sector_avg_roe=None,None
     if sector_found:
         pe_list=[]
@@ -176,10 +175,8 @@ if mode=="單一股票分析":
                 df=get_fundamentals(s)
                 pe_val=df.loc[df["指標"]=="PE","數值"].values
                 roe_val=df.loc[df["指標"]=="ROE","數值"].values
-                if len(pe_val)>0 and pe_val[0]:
-                    pe_list.append(pe_val[0])
-                if len(roe_val)>0 and roe_val[0]:
-                    roe_list.append(roe_val[0])
+                if len(pe_val)>0 and pe_val[0]: pe_list.append(pe_val[0])
+                if len(roe_val)>0 and roe_val[0]: roe_list.append(roe_val[0])
             except:
                 pass
         if pe_list: sector_avg_pe=sum(pe_list)/len(pe_list)
@@ -204,3 +201,64 @@ if mode=="單一股票分析":
     st.metric("護城河分數", Moat_s)
     st.metric("成長分數", Growth_s)
     st.metric("綜合分數", Total_s)
+
+# =========================
+# 產業共同比較
+# =========================
+elif mode=="產業共同比較":
+    sector=st.sidebar.selectbox("選擇產業",list(SECTORS.keys()),index=0)
+    st.subheader(f"🏭 {sector} 產業比較")
+    
+    manual_scores = {}
+    for symbol in SECTORS[sector]:
+        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, key=f"{symbol}_policy")
+        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數", 0, 100, key=f"{symbol}_moat")
+        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數", 0, 100, key=f"{symbol}_growth")
+        manual_scores[symbol] = {
+            "Policy_score": st.session_state[f"{symbol}_policy"],
+            "Moat_score": st.session_state[f"{symbol}_moat"],
+            "Growth_score": st.session_state[f"{symbol}_growth"]
+        }
+    
+    # 計算行業平均 PE/ROE
+    pe_list=[]
+    roe_list=[]
+    for s in SECTORS[sector]:
+        try:
+            df=get_fundamentals(s)
+            pe_val=df.loc[df["指標"]=="PE","數值"].values
+            roe_val=df.loc[df["指標"]=="ROE","數值"].values
+            if len(pe_val)>0 and pe_val[0]: pe_list.append(pe_val[0])
+            if len(roe_val)>0 and roe_val[0]: roe_list.append(roe_val[0])
+        except:
+            pass
+    sector_avg_pe=sum(pe_list)/len(pe_list) if pe_list else None
+    sector_avg_roe=sum(roe_list)/len(roe_list) if roe_list else None
+    
+    rows=[]
+    for symbol in SECTORS[sector]:
+        row={"股票":symbol}
+        try:
+            df=get_fundamentals(symbol)
+            for _,r in df.iterrows():
+                row[r["指標"]]=r["數值"]
+            PE_s,ROE_s,Policy_s,Moat_s,Growth_s,Total_s = compute_scores(
+                row,manual_scores,sector_avg_pe,sector_avg_roe
+            )
+            row["PE_score"]=round(PE_s,2)
+            row["ROE_score"]=round(ROE_s,2)
+            row["Policy_score"]=round(Policy_s,2)
+            row["Moat_score"]=round(Moat_s,2)
+            row["Growth_score"]=round(Growth_s,2)
+            row["綜合分數"]=round(Total_s,2)
+            for col in ["FCF","市值","股價"]:
+                if col in row:
+                    row[col]=format_large_numbers(row[col])
+            rows.append(row)
+        except:
+            pass
+    
+    if rows:
+        result_df=pd.DataFrame(rows)
+        result_df=result_df.sort_values("綜合分數",ascending=False)
+        st.dataframe(result_df,use_container_width=True)
