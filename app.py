@@ -173,9 +173,9 @@ if mode=="單一股票分析":
     
     # 手動輸入分數
     st.subheader("手動輸入分數")
-    manual_policy = st.number_input("政策分數", 0, 100, st.session_state[f"{symbol}_policy"], key=f"{symbol}_policy")
-    manual_moat = st.number_input("護城河分數", 0, 100, st.session_state[f"{symbol}_moat"], key=f"{symbol}_moat")
-    manual_growth = st.number_input("成長分數", 0, 100, st.session_state[f"{symbol}_growth"], key=f"{symbol}_growth")
+    manual_policy = st.number_input("政策分數", 0, 100, key=f"{symbol}_policy")
+    manual_moat = st.number_input("護城河分數", 0, 100, key=f"{symbol}_moat")
+    manual_growth = st.number_input("成長分數", 0, 100, key=f"{symbol}_growth")
     
     PE_s,ROE_s,Policy_s,Moat_s,Growth_s,Total_s = compute_scores(
         {"股票":symbol,
@@ -199,10 +199,9 @@ elif mode=="產業共同比較":
     # 手動輸入分數
     manual_scores = {}
     for symbol in SECTORS[sector]:
-        Moat_default = calculate_moat(symbol)
-        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, st.session_state[f"{symbol}_policy"], key=f"{symbol}_policy")
-        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數", 0, 100, st.session_state[f"{symbol}_moat"], key=f"{symbol}_moat")
-        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數", 0, 100, st.session_state[f"{symbol}_growth"], key=f"{symbol}_growth")
+        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, key=f"{symbol}_policy")
+        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數", 0, 100, key=f"{symbol}_moat")
+        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數", 0, 100, key=f"{symbol}_growth")
         manual_scores[symbol] = {
             "Policy_score": st.session_state[f"{symbol}_policy"],
             "Moat_score": st.session_state[f"{symbol}_moat"],
