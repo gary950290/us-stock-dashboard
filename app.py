@@ -1,22 +1,21 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from functools import lru_cache
 
 # =========================
 # 設定
 # =========================
 st.set_page_config(page_title="美股分析儀表板", layout="wide")
-st.title("📊 美股分析儀表板（政策 & 護城河 & 成長手動輸入版）")
+st.title("📊 美股分析儀表板（手動分數 + 行業動態PE/ROE + Forward/PEG）")
 
 # =========================
 # 產業股票池
 # =========================
 SECTORS = {
-    "Mag7": ["AAPL","MSFT","GOOGL","AMZN","META","NVDA"],  # TSLA 去掉
+    "Mag7": ["AAPL","MSFT","GOOGL","AMZN","META","NVDA"],  # TSLA 移除
     "資安": ["CRWD","PANW","ZS","OKTA","S"],
     "半導體": ["NVDA","AMD","INTC","TSM","AVGO"],
-    "能源": ["CEG","FLNC","TE","NEE","ENPH","EOSE","VST","PLUG","OKLO","SMR","BE","GEV"],
+    "能源": ["TSLA","CEG","FLNC","TE","NEE","ENPH","EOSE","VST","PLUG","OKLO","SMR","BE","GEV"],
     "NeoCloud": ["NBIS","IREN","CRWV","APLD"]
 }
 
@@ -30,6 +29,7 @@ COMPANY_MOAT_DATA = {
     "AMZN":{"retention":0.85,"switching":0.7,"patent":0.7,"network":0.9},
     "META":{"retention":0.8,"switching":0.6,"patent":0.6,"network":0.85},
     "NVDA":{"retention":0.9,"switching":0.8,"patent":0.95,"network":0.8},
+    "TSLA":{"retention":0.85,"switching":0.6,"patent":0.7,"network":0.7}
 }
 
 MOAT_WEIGHTS={"retention":0.4,"switching":0.3,"patent":0.2,"network":0.1}
@@ -40,32 +40,36 @@ MOAT_WEIGHTS={"retention":0.4,"switching":0.3,"patent":0.2,"network":0.1}
 st.sidebar.header("⚙️ 分析設定")
 mode = st.sidebar.selectbox("選擇模式",["產業共同比較","單一股票分析"])
 style = st.sidebar.selectbox("投資風格",["穩健型","成長型","平衡型"],index=2)
-
 WEIGHTS = {
-    "穩健型":{"PE":0.3,"ForwardPE":0.2,"ROE":0.3,"Policy":0.1,"Moat":0.1,"Growth":0.0,"PEG":0.0},
-    "成長型":{"PE":0.15,"ForwardPE":0.25,"ROE":0.2,"Policy":0.1,"Moat":0.1,"Growth":0.2,"PEG":0.2},
-    "平衡型":{"PE":0.2,"ForwardPE":0.2,"ROE":0.25,"Policy":0.1,"Moat":0.1,"Growth":0.1,"PEG":0.15}
+    "穩健型":{"PE":0.4,"ROE":0.3,"Policy":0.1,"Moat":0.2,"Growth":0.0},
+    "成長型":{"PE":0.2,"ROE":0.2,"Policy":0.2,"Moat":0.1,"Growth":0.3},
+    "平衡型":{"PE":0.3,"ROE":0.2,"Policy":0.2,"Moat":0.2,"Growth":0.1}
 }
 
 # =========================
-# 快取 Yahoo Finance
+# 快取工具函數
 # =========================
-@st.cache_data(ttl=300)
-def get_info(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        return info
-    except:
-        return {}
+@st.cache_data
+def get_price(symbol):
+    info=yf.Ticker(symbol).info
+    return info.get("currentPrice"), info.get("regularMarketChangePercent")
 
-# =========================
-# 工具函數
-# =========================
+@st.cache_data
+def get_fundamentals(symbol):
+    info=yf.Ticker(symbol).info
+    data={
+        "股價": info.get("currentPrice"),
+        "PE": info.get("trailingPE"),
+        "Forward PE": info.get("forwardPE"),
+        "EPS": info.get("trailingEps"),
+        "ROE": info.get("returnOnEquity"),
+        "市值": info.get("marketCap"),
+        "FCF": info.get("freeCashflow")
+    }
+    return pd.DataFrame(data.items(),columns=["指標","數值"])
+
 def format_large_numbers(value):
-    if value is None:
-        return "-"
-    if isinstance(value,(int,float)):
+    if isinstance(value,(int,float)) and value is not None:
         if value>=1e9:
             return f"{value/1e9:.2f} B"
         elif value>=1e6:
@@ -75,54 +79,58 @@ def format_large_numbers(value):
     return value
 
 def calculate_moat(symbol):
-    data = COMPANY_MOAT_DATA.get(symbol,{"retention":0.5,"switching":0.5,"patent":0.5,"network":0.5})
-    score = sum([data[k]*MOAT_WEIGHTS[k] for k in MOAT_WEIGHTS])*100
+    data=COMPANY_MOAT_DATA.get(symbol,{"retention":0.5,"switching":0.5,"patent":0.5,"network":0.5})
+    score=sum([data[k]*MOAT_WEIGHTS[k] for k in MOAT_WEIGHTS])*100
     return round(score,2)
 
-def compute_scores(row, manual_scores=None):
-    PE = row.get("PE") or 50
-    ForwardPE = row.get("Forward PE") or 50
-    ROE = row.get("ROE") or 0.15
-    PEG = row.get("PEG") or None
-    FCF = row.get("FCF") or 0
-
-    # ROE 校正
-    if FCF < 0:
-        ROE *= 0.8
-
-    # PEG 計算
-    if PEG is None or PEG==0:
-        growth = row.get("EPS_Growth") or 0.1
-        if growth>0:
-            PEG = PE/growth
-        else:
-            PEG = None
-
-    # 分數計算
-    PE_score = max(0,min(100,(50-PE)/(50-15)*100))
-    ForwardPE_score = max(0,min(100,(50-ForwardPE)/(50-15)*100))
-    ROE_score = min(max(ROE/0.3*100,0),100)
-    PEG_score = min(max(10/PEG*100,0),100) if PEG else 50
-
+def compute_scores(row, manual_scores=None, sector_avg_pe=None, sector_avg_roe=None):
+    PE = row.get("PE")
+    ForwardPE = row.get("Forward PE")
+    ROE = row.get("ROE")
+    FCF = row.get("FCF")
+    EPS = row.get("EPS") or 0.1
+    
+    # PEG 自動計算
+    if PE and EPS:
+        PEG = PE / EPS if EPS!=0 else None
+    else:
+        PEG = None
+    
+    # Forward PE 權重
+    PE_score = 50
+    ForwardPE_score = 50
+    PEG_score = 50
+    
+    if PE is not None and sector_avg_pe is not None:
+        PE_score = max(0, min(100, (sector_avg_pe - PE)/sector_avg_pe*100))
+    if ForwardPE is not None and sector_avg_pe is not None:
+        ForwardPE_score = max(0, min(100, (sector_avg_pe - ForwardPE)/sector_avg_pe*100))
+    if PEG:
+        PEG_score = max(0,min(100, 10/PEG*100))
+    
+    # ROE 質量校正
+    ROE_score = 50
+    if ROE is not None and sector_avg_roe is not None:
+        ROE_score = min(max(ROE / sector_avg_roe *100,0),100)
+    if FCF is not None and isinstance(FCF,(int,float)) and FCF < 0:
+        ROE_score *= 0.8  # 扣分
+    
+    symbol = row["股票"]
     Policy_score = 50
-    Moat_score = calculate_moat(row.get("股票"))
+    Moat_score = calculate_moat(symbol)
     Growth_score = 50
-
-    if manual_scores and row.get("股票") in manual_scores:
-        scores = manual_scores[row.get("股票")]
-        Policy_score = scores.get("Policy_score",Policy_score)
-        Moat_score = scores.get("Moat_score",Moat_score)
-        Growth_score = scores.get("Growth_score",Growth_score)
-
+    if manual_scores and symbol in manual_scores:
+        Policy_score = manual_scores[symbol].get("Policy_score", Policy_score)
+        Moat_score = manual_scores[symbol].get("Moat_score", Moat_score)
+        Growth_score = manual_scores[symbol].get("Growth_score", Growth_score)
+    
     w = WEIGHTS[style]
     Total_score = round(
-        PE_score*w.get("PE",0)+ForwardPE_score*w.get("ForwardPE",0)+
-        ROE_score*w.get("ROE",0)+Policy_score*w.get("Policy",0)+
-        Moat_score*w.get("Moat",0)+Growth_score*w.get("Growth",0)+
-        PEG_score*w.get("PEG",0)
-        ,2
+        PE_score*w.get("PE",0) + ForwardPE_score*0.2 + ROE_score*w.get("ROE",0) +
+        Policy_score*w.get("Policy",0) + Moat_score*w.get("Moat",0) +
+        Growth_score*w.get("Growth",0) + PEG_score*0.15,2
     )
-
+    
     return PE_score, ForwardPE_score, ROE_score, Policy_score, Moat_score, Growth_score, PEG_score, Total_score
 
 # =========================
@@ -141,102 +149,139 @@ for sector_companies in SECTORS.values():
 # 單一股票分析
 # =========================
 if mode=="單一股票分析":
-    symbol=st.sidebar.text_input("輸入美股代碼","AAPL")
+    symbol=st.sidebar.text_input("輸入美股代碼","NVDA")
     st.subheader(f"📌 {symbol} 分析")
-    info = get_info(symbol)
-
-    price = info.get("currentPrice")
-    st.metric("股價", f"${format_large_numbers(price)}")
-
-    row = {
-        "股票": symbol,
-        "PE": info.get("trailingPE"),
-        "Forward PE": info.get("forwardPE"),
-        "ROE": info.get("returnOnEquity"),
-        "FCF": info.get("freeCashflow"),
-        "PEG": info.get("pegRatio"),
-        "Forward EPS": info.get("forwardEps"),
-        "EPS_Growth": info.get("earningsQuarterlyGrowth")
-    }
-
-    # 手動分數
-    manual_policy = st.number_input("政策分數",0,100,value=st.session_state[f"{symbol}_policy"], key=f"{symbol}_policy")
-    manual_moat = st.number_input("護城河分數",0,100,value=st.session_state[f"{symbol}_moat"], key=f"{symbol}_moat")
-    manual_growth = st.number_input("成長分數",0,100,value=st.session_state[f"{symbol}_growth"], key=f"{symbol}_growth")
-
-    scores = compute_scores(row, manual_scores={symbol:{
-        "Policy_score": manual_policy,
-        "Moat_score": manual_moat,
-        "Growth_score": manual_growth
-    }})
-
-    PE_s, ForwardPE_s, ROE_s, Policy_s, Moat_s, Growth_s, PEG_s, Total_s = scores
-
-    st.metric("PE分數", round(PE_s,2))
-    st.metric("Forward PE分數", round(ForwardPE_s,2))
-    st.metric("ROE分數", round(ROE_s,2))
-    st.metric("PEG分數", round(PEG_s,2) if PEG_s else "-")
+    
+    sector_found=None
+    for sector_name,stocks in SECTORS.items():
+        if symbol in stocks:
+            sector_found=sector_name
+            break
+    
+    try:
+        price,change=get_price(symbol)
+    except:
+        price,change="N/A","N/A"
+    
+    if price!="N/A":
+        st.metric("即時股價",f"${price:.2f}",f"{change:.2f}%")
+    
+    funds_df=pd.DataFrame()
+    try:
+        funds_df=get_fundamentals(symbol)
+        for col in ["FCF","市值"]:
+            if col in funds_df["指標"].values:
+                funds_df.loc[funds_df["指標"]==col,"數值"]=funds_df.loc[funds_df["指標"]==col,"數值"].apply(format_large_numbers)
+    except:
+        st.warning("無法抓取財報數據")
+    
+    st.table(funds_df)
+    
+    st.subheader("手動輸入分數")
+    manual_policy = st.number_input("政策分數", 0, 100, key=f"{symbol}_policy")
+    manual_moat = st.number_input("護城河分數", 0, 100, key=f"{symbol}_moat")
+    manual_growth = st.number_input("成長分數", 0, 100, key=f"{symbol}_growth")
+    
+    # 行業平均
+    sector_avg_pe,sector_avg_roe=None,None
+    if sector_found:
+        pe_list=[]
+        roe_list=[]
+        for s in SECTORS[sector_found]:
+            try:
+                df=get_fundamentals(s)
+                pe_val=df.loc[df["指標"]=="PE","數值"].values
+                roe_val=df.loc[df["指標"]=="ROE","數值"].values
+                if len(pe_val)>0 and pe_val[0]: pe_list.append(pe_val[0])
+                if len(roe_val)>0 and roe_val[0]: roe_list.append(roe_val[0])
+            except:
+                pass
+        if pe_list: sector_avg_pe=sum(pe_list)/len(pe_list)
+        if roe_list: sector_avg_roe=sum(roe_list)/len(roe_list)
+    
+    PE_val=ROE_val=FCF_val=None
+    if not funds_df.empty:
+        PE_val=funds_df.loc[funds_df["指標"]=="PE","數值"].values[0] if len(funds_df.loc[funds_df["指標"]=="PE","數值"])>0 else None
+        ROE_val=funds_df.loc[funds_df["指標"]=="ROE","數值"].values[0] if len(funds_df.loc[funds_df["指標"]=="ROE","數值"])>0 else None
+        FCF_val=funds_df.loc[funds_df["指標"]=="FCF","數值"].values[0] if len(funds_df.loc[funds_df["指標"]=="FCF","數值"])>0 else None
+    
+    PE_s, ForwardPE_s, ROE_s, Policy_s, Moat_s, Growth_s, PEG_s, Total_s = compute_scores(
+        {"股票":symbol,"PE":PE_val,"Forward PE":PE_val,"ROE":ROE_val,"FCF":FCF_val,"EPS":funds_df.loc[funds_df["指標"]=="EPS","數值"].values[0] if "EPS" in funds_df["指標"].values else 1},
+        manual_scores={symbol:{"Policy_score":manual_policy,"Moat_score":manual_moat,"Growth_score":manual_growth}},
+        sector_avg_pe=sector_avg_pe,
+        sector_avg_roe=sector_avg_roe
+    )
+    
+    st.metric("PE_score", PE_s)
+    st.metric("ForwardPE_score", ForwardPE_s)
+    st.metric("ROE_score", ROE_s)
     st.metric("政策分數", Policy_s)
     st.metric("護城河分數", Moat_s)
     st.metric("成長分數", Growth_s)
+    st.metric("PEG_score", PEG_s)
     st.metric("綜合分數", Total_s)
-    st.write(pd.DataFrame([row]).T.style.format("{:.2f}"))
 
 # =========================
 # 產業共同比較
 # =========================
 elif mode=="產業共同比較":
-    sector = st.sidebar.selectbox("選擇產業",list(SECTORS.keys()))
+    sector=st.sidebar.selectbox("選擇產業",list(SECTORS.keys()),index=0)
     st.subheader(f"🏭 {sector} 產業比較")
+    
     manual_scores = {}
-    rows = []
-
     for symbol in SECTORS[sector]:
-        info = get_info(symbol)
-        row = {
-            "股票": symbol,
-            "股價": info.get("currentPrice"),
-            "PE": info.get("trailingPE"),
-            "Forward PE": info.get("forwardPE"),
-            "ROE": info.get("returnOnEquity"),
-            "FCF": info.get("freeCashflow"),
-            "PEG": info.get("pegRatio"),
-            "Forward EPS": info.get("forwardEps"),
-            "EPS_Growth": info.get("earningsQuarterlyGrowth")
-        }
-
-        # 手動分數
-        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數",0,100,value=st.session_state[f"{symbol}_policy"], key=f"{symbol}_policy")
-        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數",0,100,value=st.session_state[f"{symbol}_moat"], key=f"{symbol}_moat")
-        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數",0,100,value=st.session_state[f"{symbol}_growth"], key=f"{symbol}_growth")
-
+        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, key=f"{symbol}_policy")
+        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數", 0, 100, key=f"{symbol}_moat")
+        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數", 0, 100, key=f"{symbol}_growth")
         manual_scores[symbol] = {
-            "Policy_score": manual_policy,
-            "Moat_score": manual_moat,
-            "Growth_score": manual_growth
+            "Policy_score": st.session_state[f"{symbol}_policy"],
+            "Moat_score": st.session_state[f"{symbol}_moat"],
+            "Growth_score": st.session_state[f"{symbol}_growth"]
         }
-
-        PE_s, ForwardPE_s, ROE_s, Policy_s, Moat_s, Growth_s, PEG_s, Total_s = compute_scores(row, manual_scores)
-        row.update({
-            "PE_score": round(PE_s,2),
-            "ForwardPE_score": round(ForwardPE_s,2),
-            "ROE_score": round(ROE_s,2),
-            "Policy_score": Policy_s,
-            "Moat_score": Moat_s,
-            "Growth_score": Growth_s,
-            "PEG_score": round(PEG_s,2) if PEG_s else "-",
-            "綜合分數": Total_s
-        })
-
-        # 大數字格式化
-        for col in ["股價"]:
-            row[col] = format_large_numbers(row[col])
-
-        rows.append(row)
-
+    
+    # 計算行業平均 PE/ROE
+    pe_list=[]
+    roe_list=[]
+    for s in SECTORS[sector]:
+        try:
+            df=get_fundamentals(s)
+            pe_val=df.loc[df["指標"]=="PE","數值"].values
+            roe_val=df.loc[df["指標"]=="ROE","數值"].values
+            if len(pe_val)>0 and pe_val[0]: pe_list.append(pe_val[0])
+            if len(roe_val)>0 and roe_val[0]: roe_list.append(roe_val[0])
+        except:
+            pass
+    sector_avg_pe=sum(pe_list)/len(pe_list) if pe_list else None
+    sector_avg_roe=sum(roe_list)/len(roe_list) if roe_list else None
+    
+    rows=[]
+    for symbol in SECTORS[sector]:
+        row={"股票":symbol}
+        try:
+            df=get_fundamentals(symbol)
+            for _,r in df.iterrows():
+                row[r["指標"]] = r["數值"]
+            PE_s, ForwardPE_s, ROE_s, Policy_s, Moat_s, Growth_s, PEG_s, Total_s = compute_scores(
+                row, manual_scores, sector_avg_pe, sector_avg_roe
+            )
+            row["PE_score"] = round(PE_s,2)
+            row["ForwardPE_score"] = round(ForwardPE_s,2)
+            row["ROE_score"] = round(ROE_s,2)
+            row["Policy_score"] = round(Policy_s,2)
+            row["Moat_score"] = round(Moat_s,2)
+            row["Growth_score"] = round(Growth_s,2)
+            row["PEG_score"] = round(PEG_s,2)
+            row["綜合分數"] = round(Total_s,2)
+            
+            for col in ["FCF","市值","股價"]:
+                if col in row:
+                    row[col] = format_large_numbers(row[col])
+            
+            rows.append(row)
+        except:
+            pass
+    
     if rows:
-        df = pd.DataFrame(rows)
-        df = df[["股票","股價","PE","Forward PE","ROE","PEG","Forward EPS",
-                 "PE_score","ForwardPE_score","ROE_score","PEG_score",
-                 "Policy_score","Moat_score","Growth_score","綜合分數"]]
-        st.dataframe(df.style.format("{:.2f}"), use_container_width=True)
+        result_df=pd.DataFrame(rows)
+        result_df=result_df.sort_values("綜合分數",ascending=False)
+        st.dataframe(result_df,use_container_width=True)
