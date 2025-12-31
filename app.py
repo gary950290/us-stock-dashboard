@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
-
-from modules.price_fundamental import get_price, get_fundamentals
-from modules.scoring import total_score
+import yfinance as yf
 
 # =========================
 # 基本設定
@@ -12,10 +10,10 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 美股分析儀表板（股價｜估值｜產業比較｜綜合評分）")
+st.title("📊 美股分析儀表板（穩定版）")
 
 # =========================
-# 產業股票池（你可自行新增）
+# 產業股票池
 # =========================
 SECTORS = {
     "Mag7": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"],
@@ -24,12 +22,51 @@ SECTORS = {
 }
 
 # =========================
+# 函數：股價
+# =========================
+def get_price(symbol):
+    info = yf.Ticker(symbol).info
+    return info.get("currentPrice"), info.get("regularMarketChangePercent")
+
+# =========================
+# 函數：估值
+# =========================
+def get_fundamentals(symbol):
+    info = yf.Ticker(symbol).info
+    data = {
+        "股價": info.get("currentPrice"),
+        "PE": info.get("trailingPE"),
+        "Forward PE": info.get("forwardPE"),
+        "EPS": info.get("trailingEps"),
+        "ROE": info.get("returnOnEquity"),
+        "市值": info.get("marketCap"),
+        "FCF": info.get("freeCashflow")
+    }
+    return pd.DataFrame(data.items(), columns=["指標", "數值"])
+
+# =========================
+# 函數：綜合評分
+# =========================
+def total_score(pe, roe, policy, moat):
+    score = 0
+
+    if pe and pe < 30:
+        score += 40
+    if roe and roe > 0.15:
+        score += 20
+
+    score += policy * 20
+    score += moat * 20
+
+    return score
+
+# =========================
 # 側邊欄
 # =========================
 st.sidebar.header("⚙️ 分析設定")
 
 mode = st.sidebar.selectbox(
-    "選擇分析模式",
+    "選擇模式",
     ["單一股票分析", "產業共同比較"]
 )
 
@@ -39,72 +76,45 @@ mode = st.sidebar.selectbox(
 if mode == "單一股票分析":
     symbol = st.sidebar.text_input("輸入美股代碼", "NVDA")
 
-    st.subheader(f"📌 {symbol} 單一股票分析")
+    st.subheader(f"📌 {symbol} 分析")
 
-    col1, col2 = st.columns(2)
+    price, change = get_price(symbol)
 
-    # --- 股價 ---
-    with col1:
-        price_data = get_price(symbol)
-        if price_data["price"]:
-            st.metric(
-                "即時股價",
-                f"${price_data['price']}",
-                f"{price_data['change']:.2f}%"
-            )
-        else:
-            st.warning("無法取得股價資料")
+    if price:
+        st.metric("即時股價", f"${price}", f"{change:.2f}%")
+    else:
+        st.warning("無法取得股價")
 
-    # --- 估值 ---
-    with col2:
-        st.markdown("### 📐 估值指標")
-        fundamentals = get_fundamentals(symbol)
-        st.table(fundamentals)
+    st.markdown("### 📐 估值指標")
+    st.table(get_fundamentals(symbol))
 
 # =========================
-# 產業共同比較
+# 產業比較
 # =========================
 elif mode == "產業共同比較":
     sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()))
-
     st.subheader(f"🏭 {sector} 產業比較")
 
     rows = []
 
+    MOAT = {
+        "AAPL": 1, "MSFT": 1, "GOOGL": 1, "AMZN": 1, "META": 1,
+        "NVDA": 1, "TSLA": 0.5,
+        "CRWD": 1, "PANW": 1, "ZS": 0.5, "OKTA": 0.5, "S": 0.5,
+        "AMD": 0.5, "INTC": 0.3, "TSM": 1, "AVGO": 1
+    }
+
     for symbol in SECTORS[sector]:
         try:
             df = get_fundamentals(symbol)
-            row = {
-                "股票": symbol
-            }
+            row = {"股票": symbol}
 
             for _, r in df.iterrows():
                 row[r["指標"]] = r["數值"]
 
-            # =========================
-            # 政策分數（先用規則）
-            # =========================
-            if sector in ["Mag7", "半導體", "資安"]:
-                policy_score = 1
-            else:
-                policy_score = 0
-
-            # =========================
-            # 平台 / 專業成本（護城河）
-            # 你可手動調整
-            # =========================
-            MOAT = {
-                "AAPL": 1, "MSFT": 1, "GOOGL": 1, "AMZN": 1, "META": 1,
-                "NVDA": 1, "TSLA": 0.5,
-                "CRWD": 1, "PANW": 1, "ZS": 0.5, "OKTA": 0.5, "S": 0.5,
-                "AMD": 0.5, "INTC": 0.3, "TSM": 1, "AVGO": 1
-            }
-
+            policy_score = 1 if sector in ["Mag7", "資安", "半導體"] else 0
             moat_score = MOAT.get(symbol, 0.3)
 
-            # =========================
-            # 綜合評分
-            # =========================
             score = total_score(
                 pe=row.get("PE"),
                 roe=row.get("ROE"),
@@ -118,30 +128,22 @@ elif mode == "產業共同比較":
 
             rows.append(row)
 
-        except Exception as e:
-            st.warning(f"{symbol} 資料取得失敗")
+        except:
+            pass
 
     if rows:
-        result_df = pd.DataFrame(rows)
-        result_df = result_df.sort_values("綜合評分", ascending=False)
-
+        result_df = pd.DataFrame(rows).sort_values("綜合評分", ascending=False)
         st.dataframe(result_df, use_container_width=True)
 
-        st.markdown("### 🏆 產業排名（依綜合評分）")
-        st.table(
-            result_df[["股票", "綜合評分"]]
-            .reset_index(drop=True)
-        )
-
 # =========================
-# 說明區
+# 說明
 # =========================
 with st.expander("📘 評分邏輯說明"):
     st.markdown("""
-    **綜合評分 =**
+    **綜合評分包含：**
     - 估值合理性（PE / ROE）
-    - 政策與產業趨勢
+    - 產業與政策趨勢
     - 平台與專業護城河（Switching Cost / Network Effect）
 
-    > 所有權重與規則皆可調整，未來可升級為 AI 模型
+    👉 權重可依你的投資偏好調整
     """)
