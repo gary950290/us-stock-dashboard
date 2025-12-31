@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import feedparser
+from urllib.parse import quote
 
 # =========================
 # 基本設定
@@ -102,14 +103,14 @@ def calculate_moat(symbol):
     return round(score,2)
 
 # =========================
-# 半自動政策分數 (RSS)
+# 半自動政策分數 (RSS + URL encode)
 # =========================
 POSITIVE_KEYWORDS = ["subsidy","grant","support","funding","incentive","government contract"]
 NEGATIVE_KEYWORDS = ["restriction","ban","penalty","tax","fine","lawsuit"]
 
 def get_policy_score_google_news(company, industry, max_results=10):
     query = f"{company} {industry}"
-    rss_url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+    rss_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
     titles = [entry.title for entry in feed.entries[:max_results]]
     
