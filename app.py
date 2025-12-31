@@ -3,10 +3,10 @@ import pandas as pd
 import yfinance as yf
 
 # =========================
-# Page Config
+# 設定
 # =========================
-st.set_page_config(page_title="美股分析儀表板（專業投資版）", layout="wide")
-st.title("📊 美股分析儀表板（股價優先・雙層分析）")
+st.set_page_config(page_title="美股分析儀表板（升級版）", layout="wide")
+st.title("📊 美股分析儀表板（政策 & 護城河 & 成長手動輸入 + 行業相對 PE）")
 
 # =========================
 # 產業股票池
@@ -20,144 +20,244 @@ SECTORS = {
 }
 
 # =========================
-# 投資風格權重
-# =========================
-WEIGHTS = {
-    "穩健型":{"Valuation":0.35,"Quality":0.35,"Policy":0.1,"Moat":0.2,"Growth":0.0},
-    "平衡型":{"Valuation":0.3,"Quality":0.25,"Policy":0.15,"Moat":0.2,"Growth":0.1},
-    "成長型":{"Valuation":0.2,"Quality":0.2,"Policy":0.2,"Moat":0.1,"Growth":0.3}
+# 護城河資料
+# ==========================
+COMPANY_MOAT_DATA = {
+    "AAPL":{"retention":0.95,"switching":0.9,"patent":0.8,"network":1.0},
+    "MSFT":{"retention":0.92,"switching":0.85,"patent":0.7,"network":0.9},
+    "GOOGL":{"retention":0.9,"switching":0.8,"patent":0.75,"network":0.95},
+    "AMZN":{"retention":0.85,"switching":0.7,"patent":0.7,"network":0.9},
+    "META":{"retention":0.8,"switching":0.6,"patent":0.6,"network":0.85},
+    "NVDA":{"retention":0.9,"switching":0.8,"patent":0.95,"network":0.8},
+    "TSLA":{"retention":0.85,"switching":0.6,"patent":0.7,"network":0.7},
+    "CRWD":{"retention":0.88,"switching":0.75,"patent":0.6,"network":0.8},
+    "PANW":{"retention":0.85,"switching":0.7,"patent":0.65,"network":0.75},
+    "ZS":{"retention":0.8,"switching":0.65,"patent":0.5,"network":0.7},
+    "OKTA":{"retention":0.82,"switching":0.6,"patent":0.55,"network":0.65},
+    "S":{"retention":0.78,"switching":0.55,"patent":0.5,"network":0.6},
+    "AMD":{"retention":0.8,"switching":0.7,"patent":0.6,"network":0.7},
+    "INTC":{"retention":0.75,"switching":0.65,"patent":0.7,"network":0.6},
+    "TSM":{"retention":0.9,"switching":0.85,"patent":0.9,"network":0.8},
+    "AVGO":{"retention":0.85,"switching":0.8,"patent":0.85,"network":0.75},
+    "CEG":{"retention":0.7,"switching":0.6,"patent":0.5,"network":0.6},
+    "FLNC":{"retention":0.65,"switching":0.6,"patent":0.55,"network":0.65},
+    "TE":{"retention":0.75,"switching":0.7,"patent":0.65,"network":0.7},
+    "NEE":{"retention":0.8,"switching":0.75,"patent":0.7,"network":0.75},
+    "ENPH":{"retention":0.78,"switching":0.7,"patent":0.65,"network":0.7},
+    "EOSE":{"retention":0.7,"switching":0.65,"patent":0.6,"network":0.65},
+    "VST":{"retention":0.75,"switching":0.7,"patent":0.65,"network":0.7},
+    "PLUG":{"retention":0.72,"switching":0.65,"patent":0.6,"network":0.65},
+    "OKLO":{"retention":0.7,"switching":0.6,"patent":0.55,"network":0.6},
+    "SMR":{"retention":0.68,"switching":0.6,"patent":0.55,"network":0.6},
+    "BE":{"retention":0.7,"switching":0.65,"patent":0.6,"network":0.65},
+    "GEV":{"retention":0.72,"switching":0.66,"patent":0.6,"network":0.65},
+    "NBIS":{"retention":0.8,"switching":0.7,"patent":0.65,"network":0.7},
+    "IREN":{"retention":0.75,"switching":0.7,"patent":0.6,"network":0.65},
+    "CRWV":{"retention":0.78,"switching":0.72,"patent":0.65,"network":0.7},
+    "APLD":{"retention":0.7,"switching":0.65,"patent":0.6,"network":0.65}
 }
 
+MOAT_WEIGHTS={"retention":0.4,"switching":0.3,"patent":0.2,"network":0.1}
+
 # =========================
-# Sidebar
+# 側邊欄設定
 # =========================
 st.sidebar.header("⚙️ 分析設定")
-mode = st.sidebar.selectbox("分析模式", ["單一股票分析", "產業共同比較"])
-style = st.sidebar.selectbox("投資風格", list(WEIGHTS.keys()), index=1)
+mode = st.sidebar.selectbox("選擇模式",["產業共同比較","單一股票分析"])
+style = st.sidebar.selectbox("投資風格",["穩健型","成長型","平衡型"],index=2)
+policy_alpha = st.sidebar.slider("2026政策風險係數 (Policy Risk Alpha)",0.8,1.2,1.0,0.01)
+WEIGHTS = {
+    "穩健型":{"PE":0.4,"ROE":0.3,"Policy":0.1,"Moat":0.2,"Growth":0.0},
+    "成長型":{"PE":0.2,"ROE":0.2,"Policy":0.2,"Moat":0.1,"Growth":0.3},
+    "平衡型":{"PE":0.3,"ROE":0.2,"Policy":0.2,"Moat":0.2,"Growth":0.1}
+}
 
 # =========================
 # 工具函數
 # =========================
-def format_number(x):
-    if x is None:
-        return "-"
-    if abs(x) >= 1e9:
-        return f"{x/1e9:.2f} B"
-    if abs(x) >= 1e6:
-        return f"{x/1e6:.2f} M"
-    return f"{x:.2f}"
+def get_price(symbol):
+    info=yf.Ticker(symbol).info
+    return info.get("currentPrice"), info.get("regularMarketChangePercent")
 
-def get_raw_fundamentals(symbol):
-    info = yf.Ticker(symbol).info
-    return {
-        "股價": info.get("currentPrice"),
-        "PE": info.get("trailingPE"),
-        "Forward PE": info.get("forwardPE"),
-        "EPS": info.get("trailingEps"),
-        "ROE": info.get("returnOnEquity"),
-        "FCF": info.get("freeCashflow"),
-        "市值": info.get("marketCap"),
-        "NetDebt": info.get("netDebt"),
-        "EBITDA": info.get("ebitda")
+def get_fundamentals(symbol):
+    info=yf.Ticker(symbol).info
+    data={
+        "股價":info.get("currentPrice"),
+        "PE":info.get("trailingPE"),
+        "Forward PE":info.get("forwardPE"),
+        "EPS":info.get("trailingEps"),
+        "ROE":info.get("returnOnEquity"),
+        "市值":info.get("marketCap"),
+        "FCF":info.get("freeCashflow")
     }
+    for k in data:
+        if isinstance(data[k],float):
+            data[k]=round(data[k],4)
+    return pd.DataFrame(data.items(),columns=["指標","數值"])
+
+def format_large_numbers(value):
+    if isinstance(value,(int,float)) and value is not None:
+        if value>=1e9:
+            return f"{value/1e9:.2f} B"
+        elif value>=1e6:
+            return f"{value/1e6:.2f} M"
+        else:
+            return f"{value:.2f}"
+    return value
+
+def format_df(df,decimals=2):
+    display_df=df.copy()
+    float_cols=display_df.select_dtypes(include=["float","float64"]).columns
+    display_df[float_cols]=display_df[float_cols].round(decimals)
+    return display_df
+
+def calculate_moat(symbol):
+    data=COMPANY_MOAT_DATA.get(symbol,{"retention":0.5,"switching":0.5,"patent":0.5,"network":0.5})
+    score=sum([data[k]*MOAT_WEIGHTS[k] for k in MOAT_WEIGHTS])*100
+    return round(score,2)
+
+def compute_scores(row,manual_scores=None,policy_alpha=1.0, sector_avg_pe=20):
+    PE=row.get("PE")
+    Forward_PE=row.get("Forward PE")
+    ROE=row.get("ROE")
+    FCF=row.get("FCF")
+    symbol=row["股票"]
+
+    # 行業相對 PE Score
+    PE_score_trailing = 50 if not PE else max(0,min(100,100 - ((PE/sector_avg_pe -1)*50)))
+    PE_score_forward = 50 if not Forward_PE else max(0,min(100,100 - ((Forward_PE/sector_avg_pe -1)*50)))
+    PE_score = round(PE_score_trailing*0.3 + PE_score_forward*0.7,2)
+
+    # ROE + 質量校正
+    ROE_score = 50
+    if ROE:
+        ROE_score = min(max(ROE/0.3*100,0),100)
+        if FCF and FCF<0: ROE_score*=0.8
+
+    # 手動分數
+    Policy_score = 50
+    Moat_score = calculate_moat(symbol)
+    Growth_score = 50
+    if manual_scores and symbol in manual_scores:
+        Policy_score = manual_scores[symbol].get("Policy_score",Policy_score)
+        Moat_score = manual_scores[symbol].get("Moat_score",Moat_score)
+        Growth_score = manual_scores[symbol].get("Growth_score",Growth_score)
+    Policy_score *= policy_alpha
+
+    w=WEIGHTS[style]
+    Total_score=round(PE_score*w["PE"]+ROE_score*w["ROE"]+Policy_score*w["Policy"]+
+                      Moat_score*w["Moat"]+Growth_score*w["Growth"],2)
+
+    return PE_score,ROE_score,Policy_score,Moat_score,Growth_score,Total_score
 
 # =========================
-# 評分核心（進階版）
+# 初始化 session_state
 # =========================
-def valuation_score(pe, sector_pe):
-    if not pe or not sector_pe:
-        return 50
-    ratio = pe / sector_pe
-    return max(0, min(100, (1.5 - ratio) / 1.0 * 100))
-
-def quality_score(roe, fcf, mktcap, netdebt, ebitda):
-    score = 0
-    if roe:
-        score += min(roe / 0.25 * 60, 60)
-    if fcf and mktcap and fcf > 0:
-        score += min((fcf / mktcap) * 100 * 20, 20)
-    if netdebt and ebitda and netdebt / ebitda > 3:
-        score *= 0.8
-    return round(score, 2)
-
-def total_score(scores, style):
-    w = WEIGHTS[style]
-    return round(sum(scores[k] * w[k] for k in w), 2)
-
-# =========================
-# Session State 初始化
-# =========================
-for sector in SECTORS.values():
-    for s in sector:
-        st.session_state.setdefault(f"{s}_policy", 50)
-        st.session_state.setdefault(f"{s}_moat", 50)
-        st.session_state.setdefault(f"{s}_growth", 50)
+for sector_companies in SECTORS.values():
+    for symbol in sector_companies:
+        if f"{symbol}_policy" not in st.session_state:
+            st.session_state[f"{symbol}_policy"] = 50
+        if f"{symbol}_moat" not in st.session_state:
+            st.session_state[f"{symbol}_moat"] = calculate_moat(symbol)
+        if f"{symbol}_growth" not in st.session_state:
+            st.session_state[f"{symbol}_growth"] = 50
 
 # =========================
 # 單一股票分析
 # =========================
-if mode == "單一股票分析":
-    symbol = st.sidebar.text_input("股票代碼", "NVDA").upper()
-    raw = get_raw_fundamentals(symbol)
+if mode=="單一股票分析":
+    symbol=st.sidebar.text_input("輸入美股代碼","NVDA")
+    st.subheader(f"📌 {symbol} 分析")
+    price,change=get_price(symbol)
+    if price:
+        st.metric("即時股價",f"${price:.2f}",f"{change:.2f}%")
+    funds_df=get_fundamentals(symbol)
+    for col in ["FCF","市值"]:
+        if col in funds_df["指標"].values:
+            funds_df.loc[funds_df["指標"]==col,"數值"]=funds_df.loc[funds_df["指標"]==col,"數值"].apply(format_large_numbers)
+    st.table(funds_df)
 
-    st.subheader(f"📌 {symbol}｜即時股價")
-    if raw["股價"]:
-        st.metric("股價", f"${raw['股價']:.2f}")
+    # 手動輸入分數
+    st.subheader("手動輸入分數")
+    manual_policy = st.number_input("政策分數", 0, 100, key=f"{symbol}_policy")
+    manual_moat = st.number_input("護城河分數", 0, 100, key=f"{symbol}_moat")
+    manual_growth = st.number_input("成長分數", 0, 100, key=f"{symbol}_growth")
 
-    st.subheader("📄 財報數據")
-    display_df = pd.DataFrame({
-        "項目": raw.keys(),
-        "數值": [format_number(v) for v in raw.values()]
-    })
-    st.table(display_df)
+    sector_avg_pe = funds_df.loc[funds_df["指標"]=="PE","數值"].mean() if not funds_df.empty else 20
 
-    st.subheader("✍️ 手動調整分數")
-    st.number_input("政策分數", 0, 100, key=f"{symbol}_policy")
-    st.number_input("護城河分數", 0, 100, key=f"{symbol}_moat")
-    st.number_input("成長分數", 0, 100, key=f"{symbol}_growth")
+    PE_s,ROE_s,Policy_s,Moat_s,Growth_s,Total_s = compute_scores(
+        {"股票":symbol,
+         "PE":funds_df.loc[funds_df["指標"]=="PE","數值"].values[0] if "PE" in funds_df["指標"].values else None,
+         "Forward PE":funds_df.loc[funds_df["指標"]=="Forward PE","數值"].values[0] if "Forward PE" in funds_df["指標"].values else None,
+         "ROE":funds_df.loc[funds_df["指標"]=="ROE","數值"].values[0] if "ROE" in funds_df["指標"].values else None,
+         "FCF":funds_df.loc[funds_df["指標"]=="FCF","數值"].values[0] if "FCF" in funds_df["指標"].values else None},
+        manual_scores={symbol:{"Policy_score":manual_policy,"Moat_score":manual_moat,"Growth_score":manual_growth}},
+        policy_alpha=policy_alpha,
+        sector_avg_pe=sector_avg_pe
+    )
 
-    sector_pe = raw["PE"]  # 單股暫以自身為基準
-    scores = {
-        "Valuation": valuation_score(raw["PE"], sector_pe),
-        "Quality": quality_score(raw["ROE"], raw["FCF"], raw["市值"], raw["NetDebt"], raw["EBITDA"]),
-        "Policy": st.session_state[f"{symbol}_policy"],
-        "Moat": st.session_state[f"{symbol}_moat"],
-        "Growth": st.session_state[f"{symbol}_growth"]
-    }
-
-    st.subheader("🏁 最終評分")
-    st.metric("綜合分數", total_score(scores, style))
+    st.metric("PE_score", PE_s)
+    st.metric("ROE_score", ROE_s)
+    st.metric("政策分數", Policy_s)
+    st.metric("護城河分數", Moat_s)
+    st.metric("成長分數", Growth_s)
+    st.metric("綜合分數", Total_s)
 
 # =========================
 # 產業共同比較
 # =========================
-else:
-    sector = st.sidebar.selectbox("選擇產業", SECTORS.keys())
-    rows = []
+elif mode=="產業共同比較":
+    sector=st.sidebar.selectbox("選擇產業",list(SECTORS.keys()),index=0)
+    st.subheader(f"🏭 {sector} 產業比較")
 
-    sector_pes = []
-    for s in SECTORS[sector]:
-        pe = yf.Ticker(s).info.get("trailingPE")
-        if pe:
-            sector_pes.append(pe)
-    sector_pe_avg = sum(sector_pes) / len(sector_pes) if sector_pes else None
-
-    for s in SECTORS[sector]:
-        raw = get_raw_fundamentals(s)
-        scores = {
-            "Valuation": valuation_score(raw["PE"], sector_pe_avg),
-            "Quality": quality_score(raw["ROE"], raw["FCF"], raw["市值"], raw["NetDebt"], raw["EBITDA"]),
-            "Policy": st.session_state[f"{s}_policy"],
-            "Moat": st.session_state[f"{s}_moat"],
-            "Growth": st.session_state[f"{s}_growth"]
+    manual_scores = {}
+    for symbol in SECTORS[sector]:
+        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, key=f"{symbol}_policy")
+        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數", 0, 100, key=f"{symbol}_moat")
+        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數", 0, 100, key=f"{symbol}_growth")
+        manual_scores[symbol] = {
+            "Policy_score": st.session_state[f"{symbol}_policy"],
+            "Moat_score": st.session_state[f"{symbol}_moat"],
+            "Growth_score": st.session_state[f"{symbol}_growth"]
         }
-        rows.append({
-            "股票": s,
-            "股價": raw["股價"],
-            "綜合分數": total_score(scores, style),
-            **scores
-        })
 
-    df = pd.DataFrame(rows).sort_values("綜合分數", ascending=False)
-    df["股價"] = df["股價"].apply(lambda x: f"${x:.2f}" if x else "-")
-    st.dataframe(df, use_container_width=True)
+    rows=[]
+    for symbol in SECTORS[sector]:
+        try:
+            df=get_fundamentals(symbol)
+            row={"股票":symbol}
+            for _,r in df.iterrows():
+                row[r["指標"]]=r["數值"]
+            sector_avg_pe = df.loc[df["指標"]=="PE","數值"].mean() if not df.empty else 20
+            PE_s,ROE_s,Policy_s,Moat_s,Growth_s,Total_s = compute_scores(row,manual_scores,policy_alpha,sector_avg_pe)
+            row["PE_score"]=round(PE_s,2)
+            row["ROE_score"]=round(ROE_s,2)
+            row["Policy_score"]=round(Policy_s,2)
+            row["Moat_score"]=round(Moat_s,2)
+            row["Growth_score"]=round(Growth_s,2)
+            row["綜合分數"]=round(Total_s,2)
+            for col in ["FCF","市值"]:
+                if col in row:
+                    row[col]=format_large_numbers(row[col])
+            rows.append(row)
+        except:
+            pass
+    if rows:
+        result_df=pd.DataFrame(rows)
+        result_df=format_df(result_df)
+        result_df=result_df.sort_values("綜合分數",ascending=False)
+        st.dataframe(result_df,use_container_width=True)
+
+# =========================
+# 評分公式說明
+# =========================
+with st.expander("📘 評分依據與公式"):
+    st.markdown("""
+    **各因子計算方式**：
+    - **PE_score (估值)**：行業相對 PE，Forward PE 權重大於 Trailing，PEG 調整
+    - **ROE_score (盈利能力)**：ROE 越高越好，FCF為負扣分
+    - **Policy_score (政策)**：手動輸入，可保留值，乘以政策風險係數
+    - **Moat_score (護城河)**：續約率、轉換成本、專利、網路效應加權計算，可手動調整
+    - **Growth_score (成長潛力)**：手動輸入，可保留值
+    - **綜合分數** = 加權總分，依投資風格調整權重，Forward 指標權重高於 Trailing
+    """)
