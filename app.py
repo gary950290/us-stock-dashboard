@@ -42,6 +42,10 @@ def get_fundamentals(symbol):
         "市值": info.get("marketCap"),
         "FCF": info.get("freeCashflow")
     }
+    # 將數值四捨五入到小數點第二位
+    for k in data:
+        if isinstance(data[k], float):
+            data[k] = round(data[k], 2)
     return pd.DataFrame(data.items(), columns=["指標", "數值"])
 
 # =========================
@@ -49,16 +53,22 @@ def get_fundamentals(symbol):
 # =========================
 def total_score(pe, roe, policy, moat):
     score = 0
-
     if pe and pe < 30:
         score += 40
     if roe and roe > 0.15:
         score += 20
-
     score += policy * 20
     score += moat * 20
+    return round(score, 2)  # 顯示也四捨五入
 
-    return score
+# =========================
+# 函數：DataFrame 格式化
+# =========================
+def format_df(df, decimals=2):
+    display_df = df.copy()
+    float_cols = display_df.select_dtypes(include=["float", "float64"]).columns
+    display_df[float_cols] = display_df[float_cols].round(decimals)
+    return display_df
 
 # =========================
 # 側邊欄
@@ -67,7 +77,8 @@ st.sidebar.header("⚙️ 分析設定")
 
 mode = st.sidebar.selectbox(
     "選擇模式",
-    ["單一股票分析", "產業共同比較"]
+    ["產業共同比較", "單一股票分析"],
+    index=0  # 預設產業比較
 )
 
 # =========================
@@ -75,13 +86,11 @@ mode = st.sidebar.selectbox(
 # =========================
 if mode == "單一股票分析":
     symbol = st.sidebar.text_input("輸入美股代碼", "NVDA")
-
     st.subheader(f"📌 {symbol} 分析")
 
     price, change = get_price(symbol)
-
     if price:
-        st.metric("即時股價", f"${price}", f"{change:.2f}%")
+        st.metric("即時股價", f"${price:.2f}", f"{change:.2f}%")
     else:
         st.warning("無法取得股價")
 
@@ -92,11 +101,12 @@ if mode == "單一股票分析":
 # 產業比較
 # =========================
 elif mode == "產業共同比較":
-    sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()))
+    sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()), index=0)
     st.subheader(f"🏭 {sector} 產業比較")
 
     rows = []
 
+    # 護城河評分
     MOAT = {
         "AAPL": 1, "MSFT": 1, "GOOGL": 1, "AMZN": 1, "META": 1,
         "NVDA": 1, "TSLA": 0.5,
@@ -108,13 +118,14 @@ elif mode == "產業共同比較":
         try:
             df = get_fundamentals(symbol)
             row = {"股票": symbol}
-
             for _, r in df.iterrows():
                 row[r["指標"]] = r["數值"]
 
+            # 政策分數
             policy_score = 1 if sector in ["Mag7", "資安", "半導體"] else 0
             moat_score = MOAT.get(symbol, 0.3)
 
+            # 綜合評分
             score = total_score(
                 pe=row.get("PE"),
                 roe=row.get("ROE"),
@@ -127,12 +138,13 @@ elif mode == "產業共同比較":
             row["綜合評分"] = score
 
             rows.append(row)
-
         except:
             pass
 
     if rows:
-        result_df = pd.DataFrame(rows).sort_values("綜合評分", ascending=False)
+        result_df = pd.DataFrame(rows)
+        result_df = format_df(result_df)  # 格式化小數點
+        result_df = result_df.sort_values("綜合評分", ascending=False)
         st.dataframe(result_df, use_container_width=True)
 
 # =========================
