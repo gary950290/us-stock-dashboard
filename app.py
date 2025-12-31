@@ -5,13 +5,10 @@ import feedparser
 from urllib.parse import quote
 
 # =========================
-# 基本設定
+# 設定
 # =========================
-st.set_page_config(
-    page_title="美股分析儀表板（RSS + 手動調整版）",
-    layout="wide"
-)
-st.title("📊 美股分析儀表板（政策 & 護城河細緻化版）")
+st.set_page_config(page_title="美股分析儀表板（可手動調整分數）", layout="wide")
+st.title("📊 美股分析儀表板（政策 & 護城河細緻化）")
 
 # =========================
 # 產業股票池
@@ -23,7 +20,7 @@ SECTORS = {
 }
 
 # =========================
-# 護城河分數資料
+# 護城河資料
 # =========================
 COMPANY_MOAT_DATA = {
     "AAPL":{"retention":0.95,"switching":0.9,"patent":0.8,"network":1.0},
@@ -49,7 +46,7 @@ MOAT_WEIGHTS={"retention":0.4,"switching":0.3,"patent":0.2,"network":0.1}
 # 側邊欄設定
 # =========================
 st.sidebar.header("⚙️ 分析設定")
-mode = st.sidebar.selectbox("選擇模式",["產業共同比較","單一股票分析"],index=0)
+mode = st.sidebar.selectbox("選擇模式",["產業共同比較","單一股票分析"])
 style = st.sidebar.selectbox("投資風格",["穩健型","成長型","平衡型"],index=2)
 WEIGHTS = {
     "穩健型":{"PE":0.4,"ROE":0.3,"Policy":0.1,"Moat":0.2,"Growth":0.0},
@@ -103,12 +100,12 @@ def calculate_moat(symbol):
     return round(score,2)
 
 # =========================
-# 半自動政策分數 (RSS + URL encode)
+# 政策分數
 # =========================
 POSITIVE_KEYWORDS = ["subsidy","grant","support","funding","incentive","government contract"]
 NEGATIVE_KEYWORDS = ["restriction","ban","penalty","tax","fine","lawsuit"]
 
-def get_policy_score_google_news(company, industry, max_results=10):
+def get_policy_score_google_news(company, industry, max_results=20):
     query = f"{company} {industry}"
     rss_url = f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
@@ -173,23 +170,23 @@ if mode=="單一股票分析":
     st.metric("護城河分數", calculate_moat(symbol))
 
 # =========================
-# 產業共同比較 + 手動分數調整
+# 產業共同比較
 # =========================
 elif mode=="產業共同比較":
     sector=st.sidebar.selectbox("選擇產業",list(SECTORS.keys()),index=0)
     st.subheader(f"🏭 {sector} 產業比較")
     
     # 手動輸入分數
-    st.sidebar.subheader("手動調整分數 (可選)")
+    st.sidebar.subheader("手動調整分數 (可直接輸入數字)")
     manual_scores = {}
     for symbol in SECTORS[sector]:
         Policy_default, _ = get_policy_score_google_news(symbol, sector)
         Moat_default = calculate_moat(symbol)
         Growth_default = 50
         st.sidebar.markdown(f"**{symbol} 調整**")
-        manual_policy = st.sidebar.slider(f"{symbol} 政策分數", 0, 100, int(Policy_default))
-        manual_moat = st.sidebar.slider(f"{symbol} 護城河分數", 0, 100, int(Moat_default))
-        manual_growth = st.sidebar.slider(f"{symbol} 成長分數", 0, 100, int(Growth_default))
+        manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, int(Policy_default))
+        manual_moat = st.sidebar.number_input(f"{symbol} 護城河分數", 0, 100, int(Moat_default))
+        manual_growth = st.sidebar.number_input(f"{symbol} 成長分數", 0, 100, int(Growth_default))
         manual_scores[symbol] = {
             "Policy_score": manual_policy,
             "Moat_score": manual_moat,
