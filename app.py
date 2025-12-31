@@ -14,12 +14,13 @@ st.title("📊 美股分析儀表板（政策 & 護城河 & 成長手動輸入�
 SECTORS = {
     "Mag7": ["AAPL","MSFT","GOOGL","AMZN","META","NVDA","TSLA"],
     "資安": ["CRWD","PANW","ZS","OKTA","S"],
-    "半導體": ["NVDA","AMD","INTC","TSM","AVGO"]
+    "半導體": ["NVDA","AMD","INTC","TSM","AVGO"],
+    "能源": ["TSLA","CEG","FLNC","TE","NEE","ENPH","EOSE","VST","PLUG","OKLO","SMR","BE","GEV"],
+    "NeoCloud": ["NBIS","IREN","CRWV","APLD"]
 }
 
 # =========================
-# 護城河資料
-# =========================
+# 護城河資料（可自行補充/新增公司）=========================
 COMPANY_MOAT_DATA = {
     "AAPL":{"retention":0.95,"switching":0.9,"patent":0.8,"network":1.0},
     "MSFT":{"retention":0.92,"switching":0.85,"patent":0.7,"network":0.9},
@@ -36,8 +37,26 @@ COMPANY_MOAT_DATA = {
     "AMD":{"retention":0.8,"switching":0.7,"patent":0.6,"network":0.7},
     "INTC":{"retention":0.75,"switching":0.65,"patent":0.7,"network":0.6},
     "TSM":{"retention":0.9,"switching":0.85,"patent":0.9,"network":0.8},
-    "AVGO":{"retention":0.85,"switching":0.8,"patent":0.85,"network":0.75}
+    "AVGO":{"retention":0.85,"switching":0.8,"patent":0.85,"network":0.75},
+    # 新增能源及 NeoCloud公司護城河基準值
+    "CEG":{"retention":0.7,"switching":0.6,"patent":0.5,"network":0.6},
+    "FLNC":{"retention":0.65,"switching":0.6,"patent":0.55,"network":0.65},
+    "TE":{"retention":0.75,"switching":0.7,"patent":0.65,"network":0.7},
+    "NEE":{"retention":0.8,"switching":0.75,"patent":0.7,"network":0.75},
+    "ENPH":{"retention":0.78,"switching":0.7,"patent":0.65,"network":0.7},
+    "EOSE":{"retention":0.7,"switching":0.65,"patent":0.6,"network":0.65},
+    "VST":{"retention":0.75,"switching":0.7,"patent":0.65,"network":0.7},
+    "PLUG":{"retention":0.72,"switching":0.65,"patent":0.6,"network":0.65},
+    "OKLO":{"retention":0.7,"switching":0.6,"patent":0.55,"network":0.6},
+    "SMR":{"retention":0.68,"switching":0.6,"patent":0.55,"network":0.6},
+    "BE":{"retention":0.7,"switching":0.65,"patent":0.6,"network":0.65},
+    "GEV":{"retention":0.72,"switching":0.66,"patent":0.6,"network":0.65},
+    "NBIS":{"retention":0.8,"switching":0.7,"patent":0.65,"network":0.7},
+    "IREN":{"retention":0.75,"switching":0.7,"patent":0.6,"network":0.65},
+    "CRWV":{"retention":0.78,"switching":0.72,"patent":0.65,"network":0.7},
+    "APLD":{"retention":0.7,"switching":0.65,"patent":0.6,"network":0.65}
 }
+
 MOAT_WEIGHTS={"retention":0.4,"switching":0.3,"patent":0.2,"network":0.1}
 
 # =========================
