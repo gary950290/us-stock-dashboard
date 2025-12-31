@@ -42,7 +42,7 @@ def get_fundamentals(symbol):
         "市值": info.get("marketCap"),
         "FCF": info.get("freeCashflow")
     }
-    # 將數值四捨五入到小數點第二位
+    # 四捨五入小數點二位
     for k in data:
         if isinstance(data[k], float):
             data[k] = round(data[k], 2)
@@ -59,16 +59,29 @@ def total_score(pe, roe, policy, moat):
         score += 20
     score += policy * 20
     score += moat * 20
-    return round(score, 2)  # 顯示也四捨五入
+    return round(score, 2)
 
 # =========================
-# 函數：DataFrame 格式化
+# 函數：DataFrame 格式化小數點
 # =========================
 def format_df(df, decimals=2):
     display_df = df.copy()
     float_cols = display_df.select_dtypes(include=["float", "float64"]).columns
     display_df[float_cols] = display_df[float_cols].round(decimals)
     return display_df
+
+# =========================
+# 函數：大數值轉單位 M / B
+# =========================
+def format_large_numbers(value):
+    if isinstance(value, (int, float)) and value is not None:
+        if value >= 1e9:
+            return f"{value/1e9:.2f} B"
+        elif value >= 1e6:
+            return f"{value/1e6:.2f} M"
+        else:
+            return f"{value:.2f}"
+    return value
 
 # =========================
 # 側邊欄
@@ -78,7 +91,7 @@ st.sidebar.header("⚙️ 分析設定")
 mode = st.sidebar.selectbox(
     "選擇模式",
     ["產業共同比較", "單一股票分析"],
-    index=0  # 預設產業比較
+    index=0
 )
 
 # =========================
@@ -95,7 +108,13 @@ if mode == "單一股票分析":
         st.warning("無法取得股價")
 
     st.markdown("### 📐 估值指標")
-    st.table(get_fundamentals(symbol))
+    funds_df = get_fundamentals(symbol)
+    # 將 FCF 與 市值轉為 M/B 顯示
+    for col in ["FCF", "市值"]:
+        if col in funds_df["指標"].values:
+            funds_df.loc[funds_df["指標"]==col, "數值"] = \
+                funds_df.loc[funds_df["指標"]==col, "數值"].apply(format_large_numbers)
+    st.table(funds_df)
 
 # =========================
 # 產業比較
@@ -106,7 +125,6 @@ elif mode == "產業共同比較":
 
     rows = []
 
-    # 護城河評分
     MOAT = {
         "AAPL": 1, "MSFT": 1, "GOOGL": 1, "AMZN": 1, "META": 1,
         "NVDA": 1, "TSLA": 0.5,
@@ -121,11 +139,9 @@ elif mode == "產業共同比較":
             for _, r in df.iterrows():
                 row[r["指標"]] = r["數值"]
 
-            # 政策分數
             policy_score = 1 if sector in ["Mag7", "資安", "半導體"] else 0
             moat_score = MOAT.get(symbol, 0.3)
 
-            # 綜合評分
             score = total_score(
                 pe=row.get("PE"),
                 roe=row.get("ROE"),
@@ -137,13 +153,18 @@ elif mode == "產業共同比較":
             row["護城河分數"] = moat_score
             row["綜合評分"] = score
 
+            # FCF / 市值轉單位
+            for col in ["FCF", "市值"]:
+                if col in row:
+                    row[col] = format_large_numbers(row[col])
+
             rows.append(row)
         except:
             pass
 
     if rows:
         result_df = pd.DataFrame(rows)
-        result_df = format_df(result_df)  # 格式化小數點
+        result_df = format_df(result_df)  # 其他欄位保留小數點二位
         result_df = result_df.sort_values("綜合評分", ascending=False)
         st.dataframe(result_df, use_container_width=True)
 
