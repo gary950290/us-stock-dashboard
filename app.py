@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+from functools import lru_cache
 
 # =========================
 # 設定
 # =========================
-st.set_page_config(page_title="美股分析儀表板（全手動分數版）", layout="wide")
+st.set_page_config(page_title="美股分析儀表板（手動分數版）", layout="wide")
 st.title("📊 美股分析儀表板（政策 & 護城河 & 成長手動輸入版）")
 
 # =========================
@@ -72,37 +73,33 @@ WEIGHTS = {
 }
 
 # =========================
-# 工具函數
+# 快取財報
 # =========================
-@st.cache_data(ttl=60*60)  # 1小時快取
+@lru_cache(maxsize=256)
 def get_price(symbol):
-    try:
-        info=yf.Ticker(symbol).info
-        return info.get("currentPrice"), info.get("regularMarketChangePercent")
-    except:
-        return None, None
+    info=yf.Ticker(symbol).info
+    return info.get("currentPrice"), info.get("regularMarketChangePercent")
 
-@st.cache_data(ttl=60*60)
+@lru_cache(maxsize=256)
 def get_fundamentals(symbol):
-    try:
-        info=yf.Ticker(symbol).info
-        data={
-            "股價":info.get("currentPrice"),
-            "PE":info.get("trailingPE"),
-            "Forward PE":info.get("forwardPE"),
-            "EPS":info.get("trailingEps"),
-            "ROE":info.get("returnOnEquity"),
-            "市值":info.get("marketCap"),
-            "FCF":info.get("freeCashflow"),
-            "NetDebt/EBITDA":info.get("debtToEquity")  # 或自訂計算
-        }
-        for k in data:
-            if isinstance(data[k],float):
-                data[k]=round(data[k],4)
-        return pd.DataFrame(data.items(),columns=["指標","數值"])
-    except:
-        return pd.DataFrame()
+    info=yf.Ticker(symbol).info
+    data={
+        "股價":info.get("currentPrice"),
+        "PE":info.get("trailingPE"),
+        "Forward PE":info.get("forwardPE"),
+        "EPS":info.get("trailingEps"),
+        "ROE":info.get("returnOnEquity"),
+        "市值":info.get("marketCap"),
+        "FCF":info.get("freeCashflow")
+    }
+    for k in data:
+        if isinstance(data[k],float):
+            data[k]=round(data[k],4)
+    return pd.DataFrame(data.items(),columns=["指標","數值"])
 
+# =========================
+# 輔助函數
+# =========================
 def format_large_numbers(value):
     if isinstance(value,(int,float)) and value is not None:
         if value>=1e9:
@@ -124,21 +121,13 @@ def calculate_moat(symbol):
     score=sum([data[k]*MOAT_WEIGHTS[k] for k in MOAT_WEIGHTS])*100
     return round(score,2)
 
-def compute_scores(row,manual_scores=None, sector_avg_pe=None):
+def compute_scores(row,manual_scores=None):
     PE=row.get("PE")
-    # 動態行業映射 PE
-    if sector_avg_pe and PE:
-        PE_score=max(0,min(100,(sector_avg_pe-PE)/sector_avg_pe*100))
-    else:
-        PE_score=50
-    
+    PE_score = 50 if PE is None else max(0,min(100,(50-PE)/(50-15)*100))
     ROE=row.get("ROE")
-    FCF=row.get("FCF")
-    NetDebt=row.get("NetDebt/EBITDA")
-    # ROE 質量校正
-    ROE_score = min(max(ROE/0.3*100,0),100) if ROE else 50
+    FCF=row.get("FCF",None)
+    ROE_score = 50 if ROE is None else min(max(ROE/0.3*100,0),100)
     if FCF is not None and FCF<0: ROE_score*=0.8
-    if NetDebt is not None and NetDebt>3: ROE_score*=0.8
     
     symbol=row["股票"]
     
@@ -176,14 +165,18 @@ for sector_companies in SECTORS.values():
 if mode=="單一股票分析":
     symbol=st.sidebar.text_input("輸入美股代碼","NVDA")
     st.subheader(f"📌 {symbol} 分析")
-    price,change=get_price(symbol)
-    if price:
-        st.metric("即時股價",f"${price:.2f}",f"{change:.2f}%")
-    funds_df=get_fundamentals(symbol)
-    for col in ["FCF","市值"]:
-        if col in funds_df["指標"].values:
-            funds_df.loc[funds_df["指標"]==col,"數值"]=funds_df.loc[funds_df["指標"]==col,"數值"].apply(format_large_numbers)
-    st.table(funds_df)
+    try:
+        price,change=get_price(symbol)
+        if price:
+            st.metric("即時股價",f"${price:.2f}",f"{change:.2f}%")
+        funds_df=get_fundamentals(symbol)
+        for col in ["FCF","市值"]:
+            if col in funds_df["指標"].values:
+                funds_df.loc[funds_df["指標"]==col,"數值"]=funds_df.loc[funds_df["指標"]==col,"數值"].apply(format_large_numbers)
+        st.table(funds_df)
+    except:
+        st.error("股票資料抓取失敗，請檢查股票代碼或網路連線。")
+        funds_df=pd.DataFrame()
     
     # 手動輸入分數
     st.subheader("手動輸入分數")
@@ -191,29 +184,18 @@ if mode=="單一股票分析":
     manual_moat = st.number_input("護城河分數", 0, 100, key=f"{symbol}_moat")
     manual_growth = st.number_input("成長分數", 0, 100, key=f"{symbol}_growth")
     
-    # 計算行業平均 PE
-    sector_avg_pe = None
-    for s, comps in SECTORS.items():
-        if symbol in comps:
-            pes = [get_fundamentals(c).loc[get_fundamentals(c)["指標"]=="PE","數值"].values[0] 
-                   for c in comps if not pd.isna(get_fundamentals(c).loc[get_fundamentals(c)["指標"]=="PE","數值"].values[0])]
-            sector_avg_pe = sum(pes)/len(pes) if pes else None
-            break
-    
-    PE_s,ROE_s,Policy_s,Moat_s,Growth_s,Total_s = compute_scores(
-        {"股票":symbol,
-         "PE":funds_df.loc[funds_df["指標"]=="PE","數值"].values[0],
-         "ROE":funds_df.loc[funds_df["指標"]=="ROE","數值"].values[0],
-         "FCF":funds_df.loc[funds_df["指標"]=="FCF","數值"].values[0] if "FCF" in funds_df["指標"].values else None,
-         "NetDebt/EBITDA":funds_df.loc[funds_df["指標"]=="NetDebt/EBITDA","數值"].values[0] if "NetDebt/EBITDA" in funds_df["指標"].values else None},
-        manual_scores={symbol:{"Policy_score":manual_policy,"Moat_score":manual_moat,"Growth_score":manual_growth}},
-        sector_avg_pe=sector_avg_pe
-    )
-    
-    st.metric("政策分數", Policy_s)
-    st.metric("護城河分數", Moat_s)
-    st.metric("成長分數", Growth_s)
-    st.metric("綜合分數", Total_s)
+    if not funds_df.empty:
+        PE_val = funds_df.loc[funds_df["指標"]=="PE","數值"].values[0] if "PE" in funds_df["指標"].values else None
+        ROE_val = funds_df.loc[funds_df["指標"]=="ROE","數值"].values[0] if "ROE" in funds_df["指標"].values else None
+        FCF_val = funds_df.loc[funds_df["指標"]=="FCF","數值"].values[0] if "FCF" in funds_df["指標"].values else None
+        PE_s,ROE_s,Policy_s,Moat_s,Growth_s,Total_s = compute_scores(
+            {"股票":symbol,"PE":PE_val,"ROE":ROE_val,"FCF":FCF_val},
+            manual_scores={symbol:{"Policy_score":manual_policy,"Moat_score":manual_moat,"Growth_score":manual_growth}}
+        )
+        st.metric("政策分數", Policy_s)
+        st.metric("護城河分數", Moat_s)
+        st.metric("成長分數", Growth_s)
+        st.metric("綜合分數", Total_s)
 
 # =========================
 # 產業共同比較
@@ -222,7 +204,6 @@ elif mode=="產業共同比較":
     sector=st.sidebar.selectbox("選擇產業",list(SECTORS.keys()),index=0)
     st.subheader(f"🏭 {sector} 產業比較")
     
-    # 手動輸入分數
     manual_scores = {}
     for symbol in SECTORS[sector]:
         manual_policy = st.sidebar.number_input(f"{symbol} 政策分數", 0, 100, key=f"{symbol}_policy")
@@ -238,7 +219,6 @@ elif mode=="產業共同比較":
     for symbol in SECTORS[sector]:
         try:
             df=get_fundamentals(symbol)
-            if df.empty: continue
             row={"股票":symbol}
             for _,r in df.iterrows():
                 row[r["指標"]]=r["數值"]
@@ -268,7 +248,9 @@ with st.expander("📘 評分依據與公式"):
     st.markdown("""
     **各因子計算方式**：
     - **PE_score (估值)**：行業相對 PE，越低越好，線性映射 0~100
-    - **ROE_score (盈利能力)**：ROE 越高越好，30% ROE 為滿分，FCF<0 或 NetDebt/EBITDA>3 扣分
+    - **ROE_score (盈利能力)**：ROE 越高越好，30% ROE 為滿分，若 FCF<0 扣分
     - **Policy_score (政策)**：完全手動輸入，可保留輸入值
     - **Moat_score (護城河)**：續約率、轉換成本、專利、網路效應加權計算 0~100，可手動調整
-    - **Growth_score (成長潛力)**：完全手動輸入，可保
+    - **Growth_score (成長潛力)**：完全手動輸入，可保留輸入值
+    - **綜合分數** = 加權總分，依投資風格調整權重
+    """)
