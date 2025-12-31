@@ -1,13 +1,13 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from googlesearch import search
+import feedparser
 
 # =========================
 # 基本設定
 # =========================
 st.set_page_config(
-    page_title="美股分析儀表板（半自動政策 + 手動調整版）",
+    page_title="美股分析儀表板（RSS + 手動調整版）",
     layout="wide"
 )
 st.title("📊 美股分析儀表板（政策 & 護城河細緻化版）")
@@ -102,29 +102,27 @@ def calculate_moat(symbol):
     return round(score,2)
 
 # =========================
-# 半自動政策分數
+# 半自動政策分數 (RSS)
 # =========================
 POSITIVE_KEYWORDS = ["subsidy","grant","support","funding","incentive","government contract"]
 NEGATIVE_KEYWORDS = ["restriction","ban","penalty","tax","fine","lawsuit"]
 
 def get_policy_score_google_news(company, industry, max_results=10):
-    query = f"{company} {industry} site:news.google.com"
-    titles=[]
-    try:
-        for url in search(query, num=max_results, stop=max_results, pause=2):
-            title=url.split("/")[-1].replace("-"," ").replace("_"," ")
-            titles.append(title)
-    except:
-        titles=[]
-    score=0
+    query = f"{company} {industry}"
+    rss_url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+    feed = feedparser.parse(rss_url)
+    titles = [entry.title for entry in feed.entries[:max_results]]
+    
+    score = 0
     for t in titles:
-        t_lower=t.lower()
+        t_lower = t.lower()
         score += sum([1 for k in POSITIVE_KEYWORDS if k in t_lower])
         score -= sum([1 for k in NEGATIVE_KEYWORDS if k in t_lower])
-    if len(titles)>0:
-        score_norm=max(min((score/len(titles)+1)/2*100,100),0)
+    
+    if len(titles) > 0:
+        score_norm = max(min((score/len(titles)+1)/2*100,100),0)
     else:
-        score_norm=50
+        score_norm = 50
     return round(score_norm,2), len(titles)
 
 # =========================
@@ -138,15 +136,11 @@ def compute_scores(row,sector,manual_scores=None):
     ROE_score=min(max(ROE/0.3*100,0),100) if ROE else 50
     symbol=row["股票"]
     
-    # 政策分數
     Policy_score, news_count = get_policy_score_google_news(symbol, sector)
-    # 護城河分數
     Moat_score = calculate_moat(symbol)
-    # 成長分數
     growth=row.get("Revenue_5Y_CAGR")
     Growth_score=min(max(growth/0.3*100,0),100) if growth else 50
     
-    # 若有手動分數覆蓋
     if manual_scores and symbol in manual_scores:
         Policy_score = manual_scores[symbol].get("Policy_score",Policy_score)
         Moat_score = manual_scores[symbol].get("Moat_score",Moat_score)
@@ -173,7 +167,6 @@ if mode=="單一股票分析":
             funds_df.loc[funds_df["指標"]==col,"數值"]=funds_df.loc[funds_df["指標"]==col,"數值"].apply(format_large_numbers)
     st.table(funds_df)
     
-    # 顯示半自動政策分數與護城河
     policy_score, news_count = get_policy_score_google_news(symbol, "semiconductor")
     st.metric("政策分數", f"{policy_score}", f"新聞數量: {news_count}")
     st.metric("護城河分數", calculate_moat(symbol))
@@ -191,7 +184,7 @@ elif mode=="產業共同比較":
     for symbol in SECTORS[sector]:
         Policy_default, _ = get_policy_score_google_news(symbol, sector)
         Moat_default = calculate_moat(symbol)
-        Growth_default = 50  # 若沒有資料，可設中間值
+        Growth_default = 50
         st.sidebar.markdown(f"**{symbol} 調整**")
         manual_policy = st.sidebar.slider(f"{symbol} 政策分數", 0, 100, int(Policy_default))
         manual_moat = st.sidebar.slider(f"{symbol} 護城河分數", 0, 100, int(Moat_default))
@@ -202,7 +195,6 @@ elif mode=="產業共同比較":
             "Growth_score": manual_growth
         }
     
-    # 計算表格
     rows=[]
     for symbol in SECTORS[sector]:
         try:
@@ -239,7 +231,7 @@ with st.expander("📘 評分依據與公式"):
     **各因子計算方式**：
     - **PE_score (估值)**：PE 越低越好，行業合理區間 15~50，線性映射 0~100
     - **ROE_score (盈利能力)**：ROE 越高越好，30% ROE 為滿分，線性映射 0~100
-    - **Policy_score (政策)**：半自動新聞抓取 + 手動調整，新聞越多分數越精準
+    - **Policy_score (政策)**：RSS 抓取新聞 + 手動調整
     - **Moat_score (護城河)**：續約率、轉換成本、專利、網路效應加權計算 0~100，可手動調整
     - **Growth_score (成長潛力)**：近五年營收 CAGR / 30%，線性映射 0~100，可手動調整
     - **綜合分數** = 加權總分，依投資風格調整權重
