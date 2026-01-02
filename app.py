@@ -443,26 +443,27 @@ elif mode == "產業共同比較":
     progress_bar.empty()
     status_text.empty()
     
-    if rows:
+        if rows:
         result_df = pd.DataFrame(rows)
         result_df = result_df.sort_values("綜合分數", ascending=False)
         
-        # 顯示完整表格
+        # --- 核心修正：移除 background_gradient，改用原生 ProgressColumn ---
         st.dataframe(
-            result_df.style.background_gradient(subset=["綜合分數"], cmap="RdYlGn", vmin=0, vmax=100),
-            use_container_width=True
+            result_df,
+            column_config={
+                "綜合分數": st.column_config.ProgressColumn(
+                    "🎯 綜合分數",
+                    help="基於 2026 政策影響、PE/ROE 同行比較與護城河權重計算",
+                    format="%.2f",
+                    min_value=0,
+                    max_value=100,
+                    color="green" # 或是根據數值設定
+                ),
+                "股票": st.column_config.TextColumn("代碼"),
+                "PE": st.column_config.NumberColumn("PE (動態)", format="%.2f"),
+                "ROE": st.column_config.NumberColumn("ROE", format="%.2f"),
+            },
+            use_container_width=True,
+            hide_index=True
         )
-        
-        # 下載按鈕
-        csv = result_df.to_csv(index=False, encoding='utf-8-sig')
-        st.download_button(
-            label="📥 下載結果為CSV",
-            data=csv,
-            file_name=f"{sector}_分析結果.csv",
-            mime="text/csv"
-        )
-    else:
-        st.error("無法獲取任何股票數據，請稍後再試")
-
-st.sidebar.markdown("---")
-st.sidebar.info("💡 提示：如遇到請求限制，請等待幾分鐘後重試")
+        # ----------------------------------------------------------------
