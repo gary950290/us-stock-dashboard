@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import time
+from datetime import datetime, timedelta
 
 # =========================
 # 設定
@@ -102,29 +104,49 @@ SECTOR_WEIGHTS = {
 }
 
 # =========================
-# 快取工具函數
+# 快取工具函數（改進版）
 # =========================
-@st.cache_data
-def get_price(symbol):
-    info=yf.Ticker(symbol).info
-    return info.get("currentPrice"), info.get("regularMarketChangePercent")
+@st.cache_data(ttl=300)  # 5分鐘快取
+def get_price_safe(symbol, retry=3, delay=2):
+    """安全獲取股價，帶重試機制"""
+    for attempt in range(retry):
+        try:
+            info = yf.Ticker(symbol).info
+            return info.get("currentPrice"), info.get("regularMarketChangePercent")
+        except Exception as e:
+            if attempt < retry - 1:
+                time.sleep(delay * (attempt + 1))  # 遞增延遲
+            else:
+                st.warning(f"⚠️ {symbol}: 無法獲取股價")
+                return None, None
+    return None, None
 
-@st.cache_data
-def get_fundamentals(symbol):
-    info=yf.Ticker(symbol).info
-    data={
-        "股價":info.get("currentPrice"),
-        "PE":info.get("trailingPE"),
-        "Forward PE":info.get("forwardPE"),
-        "EPS":info.get("trailingEps"),
-        "ROE":info.get("returnOnEquity"),
-        "市值":info.get("marketCap"),
-        "FCF":info.get("freeCashflow"),
-        "營收成長":info.get("revenueGrowth"),
-        "毛利率":info.get("grossMargins"),
-        "營業利潤率":info.get("operatingMargins")
-    }
-    return pd.DataFrame(data.items(),columns=["指標","數值"])
+@st.cache_data(ttl=300)
+def get_fundamentals_safe(symbol, retry=3, delay=2):
+    """安全獲取基本面數據，帶重試機制"""
+    for attempt in range(retry):
+        try:
+            info = yf.Ticker(symbol).info
+            data = {
+                "股價": info.get("currentPrice"),
+                "PE": info.get("trailingPE"),
+                "Forward PE": info.get("forwardPE"),
+                "EPS": info.get("trailingEps"),
+                "ROE": info.get("returnOnEquity"),
+                "市值": info.get("marketCap"),
+                "FCF": info.get("freeCashflow"),
+                "營收成長": info.get("revenueGrowth"),
+                "毛利率": info.get("grossMargins"),
+                "營業利潤率": info.get("operatingMargins")
+            }
+            return pd.DataFrame(data.items(), columns=["指標", "數值"])
+        except Exception as e:
+            if attempt < retry - 1:
+                time.sleep(delay * (attempt + 1))
+            else:
+                st.warning(f"⚠️ {symbol}: 無法獲取財報數據 - {str(e)}")
+                return pd.DataFrame()
+    return pd.DataFrame()
 
 def format_large_numbers(value):
     if isinstance(value,(int,float)) and value is not None:
@@ -157,19 +179,14 @@ def compute_sector_specific_scores(row, sector, manual_scores=None, sector_avg_p
     PE_score = 50
     if PE is not None and sector_avg_pe is not None and sector_avg_pe > 0:
         if sector == "Mag7":
-            # Mag7重視合理估值
             PE_score = max(0, min(100, (sector_avg_pe - PE) / sector_avg_pe * 100))
         elif sector == "資安":
-            # 資安可接受較高PE，關注成長性
             PE_score = max(0, min(100, (sector_avg_pe * 1.2 - PE) / (sector_avg_pe * 1.2) * 100))
         elif sector == "半導體":
-            # 半導體注重週期性，低PE較優
             PE_score = max(0, min(100, (sector_avg_pe - PE) / sector_avg_pe * 120))
         elif sector == "能源":
-            # 能源重視穩定性
             PE_score = max(0, min(100, (sector_avg_pe - PE) / sector_avg_pe * 100))
         elif sector == "NeoCloud":
-            # NeoCloud高成長，PE彈性較大
             PE_score = max(0, min(100, (sector_avg_pe * 1.5 - PE) / (sector_avg_pe * 1.5) * 100))
     
     # ROE評分（動態比較 + 產業特性）
@@ -178,19 +195,14 @@ def compute_sector_specific_scores(row, sector, manual_scores=None, sector_avg_p
         base_roe_score = min(max(ROE / sector_avg_roe * 100, 0), 100)
         
         if sector == "Mag7":
-            # Mag7要求高ROE
             ROE_score = base_roe_score * 1.1 if ROE > 0.2 else base_roe_score
         elif sector == "資安":
-            # 資安重視持續改善
             ROE_score = base_roe_score * 1.05 if ROE > 0.15 else base_roe_score * 0.95
         elif sector == "半導體":
-            # 半導體ROE波動大，適度調整
             ROE_score = base_roe_score
         elif sector == "能源":
-            # 能源重視穩定ROE
             ROE_score = base_roe_score * 1.15 if ROE > 0.1 else base_roe_score * 0.9
         elif sector == "NeoCloud":
-            # NeoCloud初期ROE可能較低
             ROE_score = base_roe_score * 0.9 if ROE and ROE < 0 else base_roe_score
         
         ROE_score = min(max(ROE_score, 0), 100)
@@ -198,15 +210,13 @@ def compute_sector_specific_scores(row, sector, manual_scores=None, sector_avg_p
     # FCF調整
     if FCF is not None and isinstance(FCF, (int, float)):
         if sector == "能源" or sector == "半導體":
-            # 資本密集產業，FCF重要性較高
             if FCF < 0:
                 ROE_score *= 0.7
         elif sector == "資安" or sector == "NeoCloud":
-            # 軟體/新創，FCF負值容忍度較高
             if FCF < 0:
                 ROE_score *= 0.9
     
-    # 利潤率加分（針對特定產業）
+    # 利潤率加分
     if sector == "資安" and gross_margin and gross_margin > 0.7:
         ROE_score = min(ROE_score * 1.1, 100)
     if sector == "半導體" and operating_margin and operating_margin > 0.25:
@@ -268,25 +278,24 @@ if mode == "單一股票分析":
     if sector_found:
         st.info(f"所屬產業: **{sector_found}**")
     
-    price, change = None, None
-    try:
-        price, change = get_price(symbol)
-    except:
-        price, change = "N/A", "N/A"
+    # 獲取股價
+    price, change = get_price_safe(symbol)
     
-    if price != "N/A":
-        st.metric("即時股價", f"${price:.2f}", f"{change:.2f}%")
+    if price is not None:
+        st.metric("即時股價", f"${price:.2f}", f"{change:.2f}%" if change else "N/A")
+    else:
+        st.warning("無法獲取即時股價")
     
-    funds_df = pd.DataFrame()
-    try:
-        funds_df = get_fundamentals(symbol)
+    # 獲取財報數據
+    funds_df = get_fundamentals_safe(symbol)
+    
+    if not funds_df.empty:
         for col in ["FCF", "市值", "股價"]:
             if col in funds_df["指標"].values:
                 funds_df.loc[funds_df["指標"] == col, "數值"] = funds_df.loc[funds_df["指標"] == col, "數值"].apply(format_large_numbers)
-    except:
-        st.warning("無法抓取財報數據")
-    
-    st.table(funds_df)
+        st.table(funds_df)
+    else:
+        st.warning("無法顯示財報數據")
     
     st.subheader("📝 手動輸入分數")
     col1, col2, col3 = st.columns(3)
@@ -303,14 +312,13 @@ if mode == "單一股票分析":
         pe_list = []
         roe_list = []
         for s in SECTORS[sector_found]:
-            try:
-                df = get_fundamentals(s)
+            df = get_fundamentals_safe(s)
+            if not df.empty:
                 pe_val = df.loc[df["指標"] == "PE", "數值"].values
                 roe_val = df.loc[df["指標"] == "ROE", "數值"].values
                 if len(pe_val) > 0 and pe_val[0]: pe_list.append(pe_val[0])
                 if len(roe_val) > 0 and roe_val[0]: roe_list.append(roe_val[0])
-            except:
-                pass
+            time.sleep(0.5)  # 延遲避免頻率限制
         if pe_list: sector_avg_pe = sum(pe_list) / len(pe_list)
         if roe_list: sector_avg_roe = sum(roe_list) / len(roe_list)
     
@@ -368,32 +376,47 @@ elif mode == "產業共同比較":
                 "Growth_score": st.session_state[f"{symbol}_growth"]
             }
     
+    # 顯示進度條
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
     # 計算行業平均 PE/ROE
+    status_text.text("正在計算產業平均值...")
     pe_list = []
     roe_list = []
-    for s in SECTORS[sector]:
-        try:
-            df = get_fundamentals(s)
+    total_stocks = len(SECTORS[sector])
+    
+    for idx, s in enumerate(SECTORS[sector]):
+        df = get_fundamentals_safe(s)
+        if not df.empty:
             pe_val = df.loc[df["指標"] == "PE", "數值"].values
             roe_val = df.loc[df["指標"] == "ROE", "數值"].values
             if len(pe_val) > 0 and pe_val[0]: pe_list.append(pe_val[0])
             if len(roe_val) > 0 and roe_val[0]: roe_list.append(roe_val[0])
-        except:
-            pass
+        progress_bar.progress((idx + 1) / total_stocks)
+        time.sleep(0.8)  # 延遲避免頻率限制
     
     sector_avg_pe = sum(pe_list) / len(pe_list) if pe_list else None
     sector_avg_roe = sum(roe_list) / len(roe_list) if roe_list else None
+    
+    progress_bar.empty()
+    status_text.empty()
     
     if sector_avg_pe:
         st.info(f"📊 產業平均 PE: {sector_avg_pe:.2f}")
     if sector_avg_roe:
         st.info(f"📊 產業平均 ROE: {sector_avg_roe*100:.2f}%")
     
+    # 收集所有股票數據
+    status_text.text("正在分析各股票...")
+    progress_bar = st.progress(0)
+    
     rows = []
-    for symbol in SECTORS[sector]:
+    for idx, symbol in enumerate(SECTORS[sector]):
         row = {"股票": symbol}
-        try:
-            df = get_fundamentals(symbol)
+        df = get_fundamentals_safe(symbol)
+        
+        if not df.empty:
             for _, r in df.iterrows():
                 row[r["指標"]] = r["數值"]
             
@@ -413,8 +436,12 @@ elif mode == "產業共同比較":
                     row[col] = format_large_numbers(row[col])
             
             rows.append(row)
-        except Exception as e:
-            st.warning(f"無法處理 {symbol}: {str(e)}")
+        
+        progress_bar.progress((idx + 1) / total_stocks)
+        time.sleep(0.8)  # 延遲避免頻率限制
+    
+    progress_bar.empty()
+    status_text.empty()
     
     if rows:
         result_df = pd.DataFrame(rows)
@@ -434,3 +461,8 @@ elif mode == "產業共同比較":
             file_name=f"{sector}_分析結果.csv",
             mime="text/csv"
         )
+    else:
+        st.error("無法獲取任何股票數據，請稍後再試")
+
+st.sidebar.markdown("---")
+st.sidebar.info("💡 提示：如遇到請求限制，請等待幾分鐘後重試")
