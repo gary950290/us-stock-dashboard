@@ -125,7 +125,7 @@ def calculate_sector_specific_growth_score(PE, FWD_PE, ROE, FCF_ratio, sector):
     if sector == "Mag7" or sector == "資安":
         # 成長/科技股：極度看重預期成長，高 ROE 加分
         growth_factor = 0
-        if pe_ratio < 1.0:
+        if pe_ratio < 1.0 and pe_ratio > 0:
             # PE Ratio 越低，市場預期成長越高，分數越高 (100 - X * 50)
             growth_factor = (1 - pe_ratio) * 100 
         
@@ -136,7 +136,7 @@ def calculate_sector_specific_growth_score(PE, FWD_PE, ROE, FCF_ratio, sector):
     elif sector == "半導體":
         # 循環性產業：PE比值變化表示週期復甦/衰退
         cycle_boost = 0
-        if pe_ratio < 0.8: # FWD PE 顯著低於 Trailing PE，預期強勁復甦
+        if pe_ratio < 0.8 and pe_ratio > 0: # FWD PE 顯著低於 Trailing PE，預期強勁復甦
             cycle_boost = 30
         
         base_score = max(0, min(100, 50 + cycle_boost))
@@ -145,7 +145,7 @@ def calculate_sector_specific_growth_score(PE, FWD_PE, ROE, FCF_ratio, sector):
         # 價值/穩定型產業：成長性權重低，但仍以穩定 ROE 和估值改善為依據
         if ROE and ROE > 0.15: # 15% 以上 ROE 視為優異
             base_score += 10
-        if pe_ratio < 0.9: # 估值改善加分
+        if pe_ratio < 0.9 and pe_ratio > 0: # 估值改善加分
              base_score += 10
     
     return round(min(100, base_score), 2)
@@ -159,7 +159,7 @@ def calculate_sector_specific_policy_score(PE, ROE, FCF_ratio, sector):
     
     if sector == "Mag7":
         # Mag7：政策穩定性高，但反壟斷風險存在。注重 FCF 穩定性
-        if FCF_ratio and FCF_ratio > 0.03: # 3% 以上 FCF/市值視為極佳現金產生能力
+        if FCF_ratio is not None and FCF_ratio > 0.03: # 3% 以上 FCF/市值視為極佳現金產生能力
             base_score += 15
         
     elif sector == "資安":
@@ -168,16 +168,14 @@ def calculate_sector_specific_policy_score(PE, ROE, FCF_ratio, sector):
         
     elif sector == "半導體":
         # 半導體：受國家補貼/晶片法案影響大。
-        if "TSM" in sector and base_score > 0: # 假設為代工龍頭，政策風險與機會並存
-            base_score += 5
-        elif "INTC" in sector and base_score > 0: # 假設為本土製造商，受補貼利好
-            base_score += 15
+        # 這裡需要更細緻的判斷，但保持現有結構，給予行業性加分
+        base_score += 10 
 
     elif sector == "能源":
         # 能源：極度受政府氣候/環保政策影響，FCF 至關重要。
-        if FCF_ratio and FCF_ratio > 0.05: # 高 FCF/市值表示現金流充裕，政策變動衝擊小
+        if FCF_ratio is not None and FCF_ratio > 0.05: # 高 FCF/市值表示現金流充裕，政策變動衝擊小
             base_score += 25
-        elif FCF_ratio and FCF_ratio < 0:
+        elif FCF_ratio is not None and FCF_ratio < 0:
             base_score = 30 # 現金流為負，政策風險高
     
     return round(min(100, base_score), 2)
@@ -194,7 +192,7 @@ def compute_scores(row, manual_scores=None, sector_avg_pe=None, sector_avg_roe=N
     sector = get_sector_by_symbol(symbol)
     
     # 計算 FCF/市值比例 (用於政策/穩定性評估)
-    FCF_ratio = FCF / MarketCap if FCF is not None and MarketCap is not None and MarketCap != 0 else None
+    FCF_ratio = FCF / MarketCap if FCF is not None and MarketCap is not None and MarketCap != 0 and MarketCap is not None else None
 
     # 1. 護城河分數 (僅根據COMPANY_MOAT_DATA和MOAT_WEIGHTS計算)
     Moat_score = calculate_moat(symbol)
@@ -205,15 +203,14 @@ def compute_scores(row, manual_scores=None, sector_avg_pe=None, sector_avg_roe=N
 
     # 3. PE 分數 (行業動態比較)
     PE_score = 50
-    if PE is not None and sector_avg_pe is not None and sector_avg_pe > 0:
+    if PE is not None and PE > 0 and sector_avg_pe is not None and sector_avg_pe > 0:
         # PE 越低越好，分數範圍 0-100。相對行業平均而言，低於平均分數高。
-        # 這裡的邏輯是相對 PE，分數為 (行業平均 / 個股 PE) * 50，並限定在合理範圍
         PE_ratio = sector_avg_pe / PE if PE != 0 else 0
         PE_score = min(100, PE_ratio * 50) 
     
     # 4. ROE 分數 (行業動態比較 + FCF 懲罰)
     ROE_score = 50
-    if ROE is not None and sector_avg_roe is not None and sector_avg_roe > 0:
+    if ROE is not None and ROE > 0 and sector_avg_roe is not None and sector_avg_roe > 0:
         # ROE 越高越好，分數範圍 0-100。相對於行業平均，高於平均分數高。
         ROE_ratio = ROE / sector_avg_roe if sector_avg_roe != 0 else 0
         ROE_score = min(100, ROE_ratio * 50)
@@ -238,12 +235,10 @@ def compute_scores(row, manual_scores=None, sector_avg_pe=None, sector_avg_roe=N
 # =========================
 # 初始化 session_state
 # =========================
-# 確保初始化時使用基礎計算值，而不是固定值 50
 for sector_companies in SECTORS.values():
     for symbol in sector_companies:
         # 首次運行時，用基礎計算值填寫 Session State
         if f"{symbol}_policy" not in st.session_state:
-            # 由於初始化時無法獲取 yfinance 數據，先用 50 佔位，實際分數在渲染時計算
             st.session_state[f"{symbol}_policy"] = 50 
         if f"{symbol}_moat" not in st.session_state:
             st.session_state[f"{symbol}_moat"] = calculate_moat(symbol)
@@ -251,7 +246,6 @@ for sector_companies in SECTORS.values():
             st.session_state[f"{symbol}_growth"] = 50
         
         # 確保 MOAT 分數在每次會話開始時都使用 calculate_moat 的值
-        # 這樣當 MOAT_WEIGHTS 或 COMPANY_MOAT_DATA 改變時，分數會更新
         st.session_state[f"{symbol}_moat_base"] = calculate_moat(symbol)
 
 
@@ -332,26 +326,29 @@ if mode=="單一股票分析":
         sector_avg_roe=sector_avg_roe
     )
     
-    # 使用基礎分數作為 number_input 的預設值，但保留 session_state 中的手動值
+    # --- 修正: 加入 step=1.0 確保數字輸入為浮點數 ---
     manual_policy = st.number_input(
         f"政策分數 (行業基礎: {Policy_s_base:.2f})", 
         0, 100, 
         value=st.session_state.get(f"{symbol}_policy", Policy_s_base),
-        key=f"{symbol}_policy"
+        key=f"{symbol}_policy",
+        step=1.0 
     )
-    # Moat 分數：預設為計算值，但允許手動覆寫
     manual_moat = st.number_input(
         f"護城河分數 (計算基礎: {Moat_s_base:.2f})", 
         0, 100, 
         value=st.session_state.get(f"{symbol}_moat", Moat_s_base),
-        key=f"{symbol}_moat"
+        key=f"{symbol}_moat",
+        step=1.0
     )
     manual_growth = st.number_input(
         f"成長分數 (行業基礎: {Growth_s_base:.2f})", 
         0, 100, 
         value=st.session_state.get(f"{symbol}_growth", Growth_s_base),
-        key=f"{symbol}_growth"
+        key=f"{symbol}_growth",
+        step=1.0
     )
+    # --- 修正結束 ---
     
     # 最終計算
     PE_s,ROE_s,Policy_s,Moat_s,Growth_s,Total_s = compute_scores(
@@ -387,27 +384,32 @@ elif mode=="產業共同比較":
     
     # 第一次循環：獲取/設定手動分數到 session_state
     for symbol in SECTORS[sector]:
-        # 獲取基礎分數（需要嘗試獲取數據，但為保持側邊欄整潔，只做簡單預設）
+        # 獲取基礎分數
         Moat_s_base = st.session_state.get(f"{symbol}_moat_base", calculate_moat(symbol))
 
+        # --- 修正: 加入 step=1.0 確保數字輸入為浮點數 ---
         manual_policy = st.sidebar.number_input(
             f"[{symbol}] 政策分數", 
             0, 100, 
             value=st.session_state.get(f"{symbol}_policy", 50), 
-            key=f"sidebar_{symbol}_policy"
+            key=f"sidebar_{symbol}_policy",
+            step=1.0
         )
         manual_moat = st.sidebar.number_input(
             f"[{symbol}] 護城河分數 (基礎: {Moat_s_base:.2f})", 
             0, 100, 
             value=st.session_state.get(f"{symbol}_moat", Moat_s_base), 
-            key=f"sidebar_{symbol}_moat"
+            key=f"sidebar_{symbol}_moat",
+            step=1.0
         )
         manual_growth = st.sidebar.number_input(
             f"[{symbol}] 成長分數", 
             0, 100, 
             value=st.session_state.get(f"{symbol}_growth", 50), 
-            key=f"sidebar_{symbol}_growth"
+            key=f"sidebar_{symbol}_growth",
+            step=1.0
         )
+        # --- 修正結束 ---
         
         # 更新 session state
         st.session_state[f"{symbol}_policy"] = manual_policy
@@ -468,7 +470,6 @@ elif mode=="產業共同比較":
                     row[col]=format_large_numbers(row[col])
             rows.append(row)
         except Exception as e:
-            # st.warning(f"處理 {symbol} 時出錯: {e}") # Debugging line
             pass
     
     if rows:
