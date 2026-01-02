@@ -11,10 +11,10 @@ import google.generativeai as genai
 st.set_page_config(page_title="2026 美股 AI 戰情室", layout="wide")
 
 # ⚠️⚠️⚠️ 請在此處填入你的 Gemini API Key ⚠️⚠️⚠️
-GEMINI_API_KEY = "在此填入你的API_KEY"  
+GEMINI_API_KEY = "AIzaSyCsnKsNglTQNf8Ohym7gm7zE2mdx_KXlGQ"  
 # 若未填入 Key，AI 功能將無法使用，但其他功能正常
 
-if GEMINI_API_KEY != "在此填入你的API_KEY":
+if GEMINI_API_KEY != "AIzaSyCsnKsNglTQNf8Ohym7gm7zE2mdx_KXlGQ":
     genai.configure(api_key=GEMINI_API_KEY)
 
 # =========================
