@@ -13,7 +13,7 @@ st.title("📊 美股分析儀表板（手動分數 + 行業動態PE/ROE）")
 # =========================
 SECTORS = {
     "Mag7": ["AAPL","MSFT","GOOGL","AMZN","META","NVDA","TSLA"],
-    "資安": ["CRWD","PANW","ZS","OKTA",FTNT","S"],
+    "資安": ["CRWD","PANW","ZS","OKTA","FTNT","S"],
     "半導體": ["NVDA","AMD","INTC","TSM","AVGO"],
     "能源": ["TSLA","CEG","FLNC","TE","NEE","ENPH","EOSE","VST","PLUG","OKLO","SMR","BE","GEV"],
     "NeoCloud": ["NBIS","IREN","CRWV","APLD"]
