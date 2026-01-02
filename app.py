@@ -117,7 +117,6 @@ def get_price_safe(symbol, retry=3, delay=2):
             if attempt < retry - 1:
                 time.sleep(delay * (attempt + 1))  # 遞增延遲
             else:
-                st.warning(f"⚠️ {symbol}: 無法獲取股價")
                 return None, None
     return None, None
 
@@ -144,7 +143,6 @@ def get_fundamentals_safe(symbol, retry=3, delay=2):
             if attempt < retry - 1:
                 time.sleep(delay * (attempt + 1))
             else:
-                st.warning(f"⚠️ {symbol}: 無法獲取財報數據 - {str(e)}")
                 return pd.DataFrame()
     return pd.DataFrame()
 
@@ -162,6 +160,17 @@ def calculate_moat(symbol):
     data=COMPANY_MOAT_DATA.get(symbol,{"retention":0.5,"switching":0.5,"patent":0.5,"network":0.5})
     score=sum([data[k]*MOAT_WEIGHTS[k] for k in MOAT_WEIGHTS])*100
     return round(score,2)
+
+def get_score_color(score):
+    """根據分數返回顏色"""
+    if score >= 80:
+        return "🟢"
+    elif score >= 60:
+        return "🟡"
+    elif score >= 40:
+        return "🟠"
+    else:
+        return "🔴"
 
 def compute_sector_specific_scores(row, sector, manual_scores=None, sector_avg_pe=None, sector_avg_roe=None, style="平衡型"):
     """
@@ -340,14 +349,14 @@ if mode == "單一股票分析":
     st.subheader("📊 評分結果")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("PE評分", PE_s)
-        st.metric("ROE評分", ROE_s)
+        st.metric("PE評分", f"{get_score_color(PE_s)} {PE_s}")
+        st.metric("ROE評分", f"{get_score_color(ROE_s)} {ROE_s}")
     with col2:
-        st.metric("政策評分", Policy_s)
-        st.metric("護城河評分", Moat_s)
+        st.metric("政策評分", f"{get_score_color(Policy_s)} {Policy_s}")
+        st.metric("護城河評分", f"{get_score_color(Moat_s)} {Moat_s}")
     with col3:
-        st.metric("成長評分", Growth_s)
-        st.metric("🎯 綜合分數", Total_s, delta=None)
+        st.metric("成長評分", f"{get_score_color(Growth_s)} {Growth_s}")
+        st.metric("🎯 綜合分數", f"{get_score_color(Total_s)} {Total_s}")
 
 # =========================
 # 產業共同比較
@@ -359,7 +368,7 @@ elif mode == "產業共同比較":
     # 顯示產業專屬權重
     with st.expander("📋 查看產業專屬評分權重"):
         weights_df = pd.DataFrame(SECTOR_WEIGHTS[sector]).T
-        st.dataframe(weights_df.style.format("{:.0%}"))
+        st.dataframe(weights_df.style.format("{:.0%}"), use_container_width=True)
     
     st.sidebar.markdown("---")
     st.sidebar.subheader("✏️ 手動輸入分數")
@@ -430,6 +439,7 @@ elif mode == "產業共同比較":
             row["護城河評分"] = Moat_s
             row["成長評分"] = Growth_s
             row["綜合分數"] = Total_s
+            row["評級"] = get_score_color(Total_s)
             
             for col in ["FCF", "市值", "股價"]:
                 if col in row:
@@ -447,23 +457,35 @@ elif mode == "產業共同比較":
         result_df = pd.DataFrame(rows)
         result_df = result_df.sort_values("綜合分數", ascending=False)
         
-        # --- 核心修正：移除 background_gradient，改用原生 ProgressColumn ---
-        st.dataframe(
-            result_df,
-            column_config={
-                "綜合分數": st.column_config.ProgressColumn(
-                    "🎯 綜合分數",
-                    help="基於 2026 政策影響、PE/ROE 同行比較與護城河權重計算",
-                    format="%.2f",
-                    min_value=0,
-                    max_value=100,
-                    color="green" # 或是根據數值設定
-                ),
-                "股票": st.column_config.TextColumn("代碼"),
-                "PE": st.column_config.NumberColumn("PE (動態)", format="%.2f"),
-                "ROE": st.column_config.NumberColumn("ROE", format="%.2f"),
-            },
-            use_container_width=True,
-            hide_index=True
+        # 重新排序列，讓評級在最前面
+        cols = ["評級", "股票", "綜合分數", "PE評分", "ROE評分", "政策評分", "護城河評分", "成長評分"]
+        other_cols = [c for c in result_df.columns if c not in cols]
+        result_df = result_df[cols + other_cols]
+        
+        # 顯示完整表格（移除 background_gradient）
+        st.dataframe(result_df, use_container_width=True, height=600)
+        
+        # 顯示排名前三
+        st.subheader("🏆 排名前三")
+        top3 = result_df.head(3)
+        col1, col2, col3 = st.columns(3)
+        for idx, (col, (_, row)) in enumerate(zip([col1, col2, col3], top3.iterrows())):
+            with col:
+                st.markdown(f"### {['🥇', '🥈', '🥉'][idx]} {row['股票']}")
+                st.metric("綜合分數", f"{row['評級']} {row['綜合分數']}")
+                st.write(f"PE評分: {row['PE評分']}")
+                st.write(f"ROE評分: {row['ROE評分']}")
+        
+        # 下載按鈕
+        csv = result_df.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            label="📥 下載結果為CSV",
+            data=csv,
+            file_name=f"{sector}_分析結果_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
         )
-        # ----------------------------------------------------------------
+    else:
+        st.error("無法獲取任何股票數據，請稍後再試")
+
+st.sidebar.markdown("---")
+st.sidebar.info("💡 提示：如遇到請求限制，請等待幾分鐘後重試")
