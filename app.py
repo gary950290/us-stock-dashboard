@@ -443,7 +443,7 @@ elif mode == "產業共同比較":
     progress_bar.empty()
     status_text.empty()
     
-        if rows:
+    if rows:
         result_df = pd.DataFrame(rows)
         result_df = result_df.sort_values("綜合分數", ascending=False)
         
