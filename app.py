@@ -239,11 +239,11 @@ for sector_companies in SECTORS.values():
     for symbol in sector_companies:
         # 首次運行時，用基礎計算值填寫 Session State
         if f"{symbol}_policy" not in st.session_state:
-            st.session_state[f"{symbol}_policy"] = 50 
+            st.session_state[f"{symbol}_policy"] = 50.0 # 確保為浮點數
         if f"{symbol}_moat" not in st.session_state:
             st.session_state[f"{symbol}_moat"] = calculate_moat(symbol)
         if f"{symbol}_growth" not in st.session_state:
-            st.session_state[f"{symbol}_growth"] = 50
+            st.session_state[f"{symbol}_growth"] = 50.0 # 確保為浮點數
         
         # 確保 MOAT 分數在每次會話開始時都使用 calculate_moat 的值
         st.session_state[f"{symbol}_moat_base"] = calculate_moat(symbol)
@@ -326,25 +326,25 @@ if mode=="單一股票分析":
         sector_avg_roe=sector_avg_roe
     )
     
-    # --- 修正: 加入 step=1.0 確保數字輸入為浮點數 ---
+    # --- 修正: 加入 float() 轉換，確保 value 參數為浮點數，並設置 step=1.0 ---
     manual_policy = st.number_input(
         f"政策分數 (行業基礎: {Policy_s_base:.2f})", 
         0, 100, 
-        value=st.session_state.get(f"{symbol}_policy", Policy_s_base),
+        value=float(st.session_state.get(f"{symbol}_policy", Policy_s_base)),
         key=f"{symbol}_policy",
         step=1.0 
     )
     manual_moat = st.number_input(
         f"護城河分數 (計算基礎: {Moat_s_base:.2f})", 
         0, 100, 
-        value=st.session_state.get(f"{symbol}_moat", Moat_s_base),
+        value=float(st.session_state.get(f"{symbol}_moat", Moat_s_base)),
         key=f"{symbol}_moat",
         step=1.0
     )
     manual_growth = st.number_input(
         f"成長分數 (行業基礎: {Growth_s_base:.2f})", 
         0, 100, 
-        value=st.session_state.get(f"{symbol}_growth", Growth_s_base),
+        value=float(st.session_state.get(f"{symbol}_growth", Growth_s_base)),
         key=f"{symbol}_growth",
         step=1.0
     )
@@ -387,25 +387,25 @@ elif mode=="產業共同比較":
         # 獲取基礎分數
         Moat_s_base = st.session_state.get(f"{symbol}_moat_base", calculate_moat(symbol))
 
-        # --- 修正: 加入 step=1.0 確保數字輸入為浮點數 ---
+        # --- 修正: 加入 float() 轉換，確保 value 參數為浮點數，並設置 step=1.0 ---
         manual_policy = st.sidebar.number_input(
             f"[{symbol}] 政策分數", 
             0, 100, 
-            value=st.session_state.get(f"{symbol}_policy", 50), 
+            value=float(st.session_state.get(f"{symbol}_policy", 50.0)), # 確保默認值也為 float
             key=f"sidebar_{symbol}_policy",
             step=1.0
         )
         manual_moat = st.sidebar.number_input(
             f"[{symbol}] 護城河分數 (基礎: {Moat_s_base:.2f})", 
             0, 100, 
-            value=st.session_state.get(f"{symbol}_moat", Moat_s_base), 
+            value=float(st.session_state.get(f"{symbol}_moat", Moat_s_base)), 
             key=f"sidebar_{symbol}_moat",
             step=1.0
         )
         manual_growth = st.sidebar.number_input(
             f"[{symbol}] 成長分數", 
             0, 100, 
-            value=st.session_state.get(f"{symbol}_growth", 50), 
+            value=float(st.session_state.get(f"{symbol}_growth", 50.0)), # 確保默認值也為 float
             key=f"sidebar_{symbol}_growth",
             step=1.0
         )
@@ -484,4 +484,3 @@ elif mode=="產業共同比較":
         st.dataframe(result_df[final_cols],use_container_width=True)
     else:
         st.warning("無法加載所有股票數據，請檢查代碼或網路連接。")
-
