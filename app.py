@@ -6,6 +6,9 @@ from datetime import datetime
 import google.generativeai as genai
 import json
 
+# 設定重試次數
+MAX_RETRIES = 3 
+
 # =========================
 # 初始化 Gemini API
 # =========================
@@ -19,11 +22,29 @@ except Exception as e:
     st.stop()
 
 # =========================
-# 設定
+# 設定與 CSS 注入
 # =========================
 st.set_page_config(page_title="2026 專業美股投資評比系統", layout="wide")
 st.title("🏛️ 2026 專業美股投資評比系統")
 st.caption("基於 FCF 安全性、前瞻估值與產業專屬邏輯的量化分析儀表板")
+
+# 强制 CSS 注入：解決 iFrame/嵌入式環境中的滾動條問題
+st.markdown(
+    """
+    <style>
+    /* 針對主要的 Streamlit App 容器，強制啟用垂直滾動 */
+    .stApp {
+        overflow-y: auto !important;
+        max-height: 100vh;
+    }
+    /* 確保所有垂直區塊也能正確處理溢出 */
+    div[data-testid^="stVerticalBlock"] {
+        overflow-y: auto !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # =========================
 # 產業股票池
@@ -154,20 +175,53 @@ def calculate_2026_score(info, sector, manual_scores, sector_avg_data):
 # =========================
 # AI 洞察 (Gemini)
 # =========================
-def get_ai_market_insight(symbol, sector, current_weights):
-    # 偵錯訊息已不再需要，將其移除以保持介面清潔
-    # st.info("💡 偵錯訊息：開始嘗試獲取股票新聞和呼叫 Gemini API...") 
+
+def call_gemini_with_retry(prompt, status_placeholder, max_retries=MAX_RETRIES):
+    """實作指數退避重試機制，確保 API 呼叫的穩定性。"""
+    delay = 2  # 初始延遲 (秒)
+    for attempt in range(max_retries):
+        try:
+            # 顯示重試狀態
+            status_placeholder.warning(f"🤖 嘗試呼叫 Gemini API (第 {attempt + 1} 次嘗試)...")
+            
+            # 執行 API 呼叫
+            response = model.generate_content(prompt)
+            clean_json = response.text.replace('```json', '').replace('```', '').strip()
+            
+            # 檢查是否為空內容
+            if not clean_json:
+                raise ValueError("API 返回空響應或無效內容，無法解析 JSON。")
+
+            # 嘗試解析 JSON
+            insight = json.loads(clean_json)
+            # 成功則立即返回
+            status_placeholder.success("✅ Gemini API 呼叫成功並解析 JSON。")
+            return insight
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                # 如果不是最後一次嘗試，等待並重試
+                status_placeholder.warning(f"⚠️ 呼叫失敗，將在 {delay} 秒後重試。錯誤類型: {type(e).__name__} - {e}")
+                time.sleep(delay)
+                delay *= 2  # 指數退避
+            else:
+                # 最後一次嘗試失敗，顯示最終錯誤
+                status_placeholder.error(f"❌ Gemini 分析失敗：連續重試 {max_retries} 次後仍失敗。錯誤類型: {type(e).__name__} - {e}")
+                print(f"DEBUG ERROR: call_gemini_with_retry failed after {max_retries} attempts. Error: {e}")
+                return None
+    return None
+
+def get_ai_market_insight(symbol, sector, current_weights, status_placeholder):
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news[:5]
         
-        # FIX: 安全地提取新聞標題，避免 KeyError: 'title'
+        # 安全地提取新聞標題
         safe_news_titles = [f"- {n['title']}" for n in news if isinstance(n, dict) and 'title' in n]
         
         if safe_news_titles:
             news_text = "\n".join(safe_news_titles)
         else:
-            # 如果找不到有效新聞，提供一個 fallback 提示
             news_text = f"找不到最新新聞或新聞格式有誤。請基於 {symbol} 過去一週的行業趨勢進行一般性分析。"
         
         prompt = f"""
@@ -185,14 +239,13 @@ def get_ai_market_insight(symbol, sector, current_weights):
             "reason": "理由"
         }}
         """
-        response = model.generate_content(prompt)
-        clean_json = response.text.replace('```json', '').replace('```', '').strip()
+        # 使用帶有重試機制的函數來呼叫 API
+        insight = call_gemini_with_retry(prompt, status_placeholder)
+        return insight
         
-        # 嘗試解析 JSON
-        return json.loads(clean_json)
     except Exception as e:
-        # 如果失敗，將錯誤印出來
-        st.error(f"❌ Gemini 分析失敗：{e}")
+        # 處理 yfinance 或其他非 API 呼叫的錯誤
+        status_placeholder.error(f"❌ 數據獲取或準備分析失敗：{e}")
         print(f"DEBUG ERROR: get_ai_market_insight failed for {symbol}. Error: {e}")
         return None
 
@@ -248,20 +301,27 @@ m_moat = st.sidebar.slider(
 )
 # --- 結束手動評分持久化邏輯 ---
 
+# AI 狀態顯示區塊 (使用 st.empty() 確保 UI 不跳動)
+status_placeholder = st.empty() 
+
 if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
-    st.success("✅ 按鈕已觸發：正在進入 AI 分析流程。")
+    status_placeholder.success("✅ 按鈕已觸發：正在進入 AI 分析流程。")
     
-    with st.spinner("Gemini 正在分析 2026 投資影響..."):
-        insight = get_ai_market_insight(selected_stock, selected_sector, st.session_state.weights[selected_sector])
-            
-        if insight:
-            st.session_state.last_insight = insight
-            st.session_state.weights[selected_sector] = insight["suggested_weights"]
+    with status_placeholder.container(): # 使用 container 包裝 spinner，以在結束後清空
+        with st.spinner("Gemini 正在分析 2026 投資影響..."):
+            # 傳遞 status_placeholder 讓 API 函數可以更新狀態
+            insight = get_ai_market_insight(selected_stock, selected_sector, st.session_state.weights[selected_sector], status_placeholder)
+        
+    if insight:
+        st.session_state.last_insight = insight
+        st.session_state.weights[selected_sector] = insight["suggested_weights"]
+    
+    # 清除臨時狀態訊息
+    status_placeholder.empty()
 
 # 顯示 AI 洞察
 if "last_insight" in st.session_state:
     ins = st.session_state.last_insight
-    # 修正：將 AI 洞察置頂顯示
     st.info(f"### AI 2026 投資洞察 ({ins['sentiment']})\n**總結**: {ins['summary']}\n\n**權重調整理由**: {ins['reason']}")
 
 # 獲取數據並計算
@@ -286,13 +346,13 @@ if info:
         "得分": [scores["Valuation"], scores["Quality"], scores["Growth"], scores["MoatPolicy"]],
         "權重": [st.session_state.weights[selected_sector][k] for k in ["Valuation", "Quality", "Growth", "MoatPolicy"]]
     })
-    # FIX: 使用 st.dataframe 替換 st.table 以獲得更好的響應性
+    # 使用 st.dataframe 確保大型表格的滾動行為正常
     st.dataframe(detail_data) 
     
     if scores["Adjustment"] != 0:
         st.warning(f"⚠️ 觸發懲罰/加成機制：總分已調整 {scores['Adjustment']} 分")
 
-    # 產業橫向比較
+    # 產業橫向比較 (這是最可能造成溢出的部分)
     with st.expander(f"🏭 查看 {selected_sector} 產業橫向排序"):
         results = []
         for s in SECTORS[selected_sector]:
@@ -307,7 +367,7 @@ if info:
                     "Fwd PE": s_info.get("forwardPE"),
                     "FCF": s_info.get("freeCashflow")
                 })
-        # FIX: 使用 st.dataframe 確保大型表格的滾動行為正常
+        # 使用 st.dataframe 確保大型表格的滾動行為正常
         st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False)) 
 else:
     st.error("無法獲取股票數據")
