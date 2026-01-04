@@ -84,6 +84,26 @@ SECTOR_CONFIG = {
 }
 
 # =========================
+# 持久化儲存函數
+# =========================
+def save_to_storage(key, data):
+    """將數據保存到 Streamlit 持久化儲存"""
+    try:
+        st.session_state[f"persistent_{key}"] = json.dumps(data)
+    except Exception as e:
+        st.warning(f"儲存 {key} 失敗: {e}")
+
+def load_from_storage(key, default=None):
+    """從 Streamlit 持久化儲存讀取數據"""
+    try:
+        stored_key = f"persistent_{key}"
+        if stored_key in st.session_state:
+            return json.loads(st.session_state[stored_key])
+    except Exception as e:
+        st.warning(f"讀取 {key} 失敗: {e}")
+    return default
+
+# =========================
 # 工具函數
 # =========================
 @st.cache_data(ttl=300)
@@ -98,15 +118,6 @@ def get_tier(score):
     if score >= 80: return "Tier 1 (強烈優先配置) 🚀"
     elif score >= 60: return "Tier 2 (穩健配置) ⚖️"
     else: return "Tier 3 (觀察或減碼) ⚠️"
-
-def weights_are_equal(w1, w2, tolerance=0.001):
-    """比較兩個權重字典是否相等（考慮浮點數誤差）"""
-    if set(w1.keys()) != set(w2.keys()):
-        return False
-    for key in w1.keys():
-        if abs(w1[key] - w2[key]) > tolerance:
-            return False
-    return True
 
 # =========================
 # 評分引擎 (2026 專業邏輯)
@@ -260,50 +271,134 @@ def get_ai_market_insight(symbol, sector, current_weights, status):
         return None
 
 # =========================
+# 批次 AI 分析函數
+# =========================
+def batch_analyze_sector(sector, progress_container):
+    """批次分析整個產業的所有股票"""
+    stocks = SECTORS[sector]
+    total = len(stocks)
+    results = {}
+    
+    progress_bar = progress_container.progress(0)
+    status_text = progress_container.empty()
+    
+    for idx, stock in enumerate(stocks):
+        status_text.write(f"🔍 正在分析 {stock} ({idx + 1}/{total})...")
+        
+        with st.status(f"分析 {stock}", expanded=False) as status:
+            insight = get_ai_market_insight(
+                stock,
+                sector,
+                st.session_state.weights[stock],
+                status
+            )
+            
+            if insight:
+                results[stock] = {
+                    "insight": insight,
+                    "weights": insight["suggested_weights"],
+                    "timestamp": datetime.now().isoformat()
+                }
+                # 更新權重和標記
+                st.session_state.weights[stock] = insight["suggested_weights"]
+                st.session_state.stock_insights[stock] = insight
+                st.session_state.ai_adjusted[stock] = True
+                
+                # 持久化儲存
+                save_to_storage("weights", st.session_state.weights)
+                save_to_storage("stock_insights", st.session_state.stock_insights)
+                save_to_storage("ai_adjusted", st.session_state.ai_adjusted)
+                
+                status.update(label=f"✅ {stock} 分析完成", state="complete")
+            else:
+                results[stock] = {"error": "分析失敗"}
+                status.update(label=f"❌ {stock} 分析失敗", state="error")
+            
+            # 為避免 API 限流，每次分析後稍作延遲
+            time.sleep(1)
+        
+        progress_bar.progress((idx + 1) / total)
+    
+    status_text.write(f"✅ {sector} 產業批次分析完成！")
+    return results
+
+# =========================
+# 初始化持久化數據
+# =========================
+
+# 初始化按個股儲存的權重（優先從持久化儲存讀取）
+if "weights" not in st.session_state:
+    loaded_weights = load_from_storage("weights")
+    if loaded_weights:
+        st.session_state.weights = loaded_weights
+    else:
+        st.session_state.weights = {}
+        for sector, stocks in SECTORS.items():
+            for stock in stocks:
+                st.session_state.weights[stock] = SECTOR_CONFIG[sector]["weights"].copy()
+
+# 初始化按個股儲存的 AI 洞察
+if "stock_insights" not in st.session_state:
+    loaded_insights = load_from_storage("stock_insights")
+    if loaded_insights:
+        st.session_state.stock_insights = loaded_insights
+    else:
+        st.session_state.stock_insights = {}
+
+# 初始化 AI 調整標記
+if "ai_adjusted" not in st.session_state:
+    loaded_adjusted = load_from_storage("ai_adjusted")
+    if loaded_adjusted:
+        st.session_state.ai_adjusted = loaded_adjusted
+    else:
+        st.session_state.ai_adjusted = {}
+        for sector, stocks in SECTORS.items():
+            for stock in stocks:
+                st.session_state.ai_adjusted[stock] = False
+
+# 初始化手動評分（持久化儲存）
+if "manual_scores" not in st.session_state:
+    loaded_manual = load_from_storage("manual_scores")
+    if loaded_manual:
+        st.session_state.manual_scores = loaded_manual
+    else:
+        st.session_state.manual_scores = {}
+
+# =========================
 # UI 佈局
 # =========================
 st.sidebar.header("⚙️ 2026 評比設定")
+
+# 新增批次分析按鈕
+st.sidebar.subheader("🚀 批次 AI 分析")
+batch_sector = st.sidebar.selectbox("選擇要批次分析的產業", list(SECTORS.keys()), key="batch_sector")
+
+if st.sidebar.button("🔥 一鍵分析整個產業", type="primary"):
+    progress_container = st.sidebar.container()
+    with st.spinner(f"正在批次分析 {batch_sector} 產業..."):
+        results = batch_analyze_sector(batch_sector, progress_container)
+    st.sidebar.success(f"✅ {batch_sector} 產業分析完成！共處理 {len(results)} 支股票")
+
+st.sidebar.divider()
+
 selected_sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()))
 selected_stock = st.sidebar.selectbox("選擇股票", SECTORS[selected_sector])
 
-# 初始化按個股儲存的權重
-if "weights" not in st.session_state:
-    st.session_state.weights = {}
-    for sector, stocks in SECTORS.items():
-        for stock in stocks:
-            # 每支股票都有自己的權重副本
-            st.session_state.weights[stock] = SECTOR_CONFIG[sector]["weights"].copy()
-
-# 初始化按個股儲存的 AI 洞察（修正問題 2）
-if "stock_insights" not in st.session_state:
-    st.session_state.stock_insights = {}
-
-# 初始化 AI 調整標記（修正問題 1）
-if "ai_adjusted" not in st.session_state:
-    st.session_state.ai_adjusted = {}
-    for sector, stocks in SECTORS.items():
-        for stock in stocks:
-            st.session_state.ai_adjusted[stock] = False
-
-# --- 手動評分持久化邏輯 ---
-
-# 1. 初始化用於儲存所有股票手動評分的核心狀態
-if "manual_scores" not in st.session_state:
-    st.session_state.manual_scores = {}
-
-# 2. 確保當前選定股票的評分已初始化（預設 50）
+# 確保當前選定股票的評分已初始化（預設 50）
 current_stock = selected_stock
 if current_stock not in st.session_state.manual_scores:
     st.session_state.manual_scores[current_stock] = {"Policy": 50, "Moat": 50}
 
-# 3. 定義回調函數
+# 定義回調函數（包含持久化）
 def update_policy_score():
     st.session_state.manual_scores[current_stock]["Policy"] = st.session_state[f"{current_stock}_p"]
+    save_to_storage("manual_scores", st.session_state.manual_scores)
 
 def update_moat_score():
     st.session_state.manual_scores[current_stock]["Moat"] = st.session_state[f"{current_stock}_m"]
+    save_to_storage("manual_scores", st.session_state.manual_scores)
     
-# 4. 從 session state 中讀取當前股票的持久化值
+# 從 session state 中讀取當前股票的持久化值
 policy_default = st.session_state.manual_scores[current_stock]["Policy"]
 moat_default = st.session_state.manual_scores[current_stock]["Moat"]
 
@@ -325,15 +420,10 @@ m_moat = st.sidebar.slider(
     key=f"{current_stock}_m", 
     on_change=update_moat_score
 )
-# --- 結束手動評分持久化邏輯 ---
 
-# 使用 st.status 來處理所有狀態顯示
-if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
-    
-    # 使用 st.status，它會自動處理 spinner、狀態更新和最終狀態顯示
+# 單股 AI 分析按鈕
+if st.sidebar.button("🤖 分析當前股票"):
     with st.status("🤖 正在執行 AI 投資分析...", expanded=True) as status:
-        
-        # 傳入「當前股票」的權重，而非產業通用權重
         insight = get_ai_market_insight(
             selected_stock, 
             selected_sector, 
@@ -342,20 +432,38 @@ if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
         )
         
         if insight:
-            # 儲存到個股專屬的洞察（修正問題 2）
             st.session_state.stock_insights[selected_stock] = insight
-            # 只更新「當前股票」的權重
             st.session_state.weights[selected_stock] = insight["suggested_weights"]
-            # 標記該股票已被 AI 調整（修正問題 1）
             st.session_state.ai_adjusted[selected_stock] = True
-            # 成功完成，更新最終狀態
+            
+            # 持久化儲存
+            save_to_storage("weights", st.session_state.weights)
+            save_to_storage("stock_insights", st.session_state.stock_insights)
+            save_to_storage("ai_adjusted", st.session_state.ai_adjusted)
+            
             status.update(label="✅ 分析完成！評級與權重已更新。", state="complete", expanded=False)
         else:
-            # 失敗，更新最終狀態
             status.update(label="❌ 分析失敗：請檢查上面的錯誤訊息。", state="error")
 
+# 新增：清除數據按鈕
+st.sidebar.divider()
+if st.sidebar.button("🗑️ 清除所有 AI 分析記錄", type="secondary"):
+    # 重置 AI 相關數據
+    for sector, stocks in SECTORS.items():
+        for stock in stocks:
+            st.session_state.weights[stock] = SECTOR_CONFIG[sector]["weights"].copy()
+            st.session_state.ai_adjusted[stock] = False
+    st.session_state.stock_insights = {}
+    
+    # 持久化儲存
+    save_to_storage("weights", st.session_state.weights)
+    save_to_storage("stock_insights", st.session_state.stock_insights)
+    save_to_storage("ai_adjusted", st.session_state.ai_adjusted)
+    
+    st.sidebar.success("✅ 已清除所有 AI 分析記錄（手動評分保留）")
+    st.rerun()
 
-# 顯示當前股票的 AI 洞察（修正問題 2）
+# 顯示當前股票的 AI 洞察
 if selected_stock in st.session_state.stock_insights:
     ins = st.session_state.stock_insights[selected_stock]
     st.info(f"### 🤖 AI 2026 投資洞察 - {selected_stock} ({ins['sentiment']})\n**總結**: {ins['summary']}\n\n**權重調整理由**: {ins['reason']}")
@@ -363,16 +471,14 @@ if selected_stock in st.session_state.stock_insights:
 # 獲取數據並計算
 info = get_stock_data(selected_stock)
 if info:
-    # 模擬產業平均數據 (實際應從多股平均獲取)
     sector_avg_data = {"avg_fwd_pe": 25} 
     
-    # 評分計算使用當前股票的權重
     scores = calculate_2026_score(
         info, 
         selected_sector, 
         {"Policy": m_policy, "Moat": m_moat}, 
         sector_avg_data,
-        st.session_state.weights[selected_stock]  # 傳入個股權重
+        st.session_state.weights[selected_stock]
     )
     
     col1, col2, col3 = st.columns(3)
@@ -382,13 +488,11 @@ if info:
     
     st.subheader(f"📊 {selected_sector} 評分維度 (焦點：{SECTOR_CONFIG[selected_sector]['focus']})")
     
-    # 顯示維度細節 - 使用當前股票的權重
     detail_data = pd.DataFrame({
         "維度": ["前瞻估值 (Valuation)", "獲利質量 (Quality)", "成長動能 (Growth)", "政策與護城河 (MoatPolicy)"],
         "得分": [scores["Valuation"], scores["Quality"], scores["Growth"], scores["MoatPolicy"]],
         "權重": [st.session_state.weights[selected_stock][k] for k in ["Valuation", "Quality", "Growth", "MoatPolicy"]]
     })
-    # 使用 st.dataframe 確保大型表格的滾動行為正常
     st.dataframe(detail_data) 
     
     if scores["Adjustment"] != 0:
@@ -400,16 +504,17 @@ if info:
         for s in SECTORS[selected_sector]:
             s_info = get_stock_data(s)
             if s_info:
-                # 使用該股票自己的權重進行評分
+                # 獲取該股票的手動評分（如果沒有則使用預設值 50）
+                s_manual = st.session_state.manual_scores.get(s, {"Policy": 50, "Moat": 50})
+                
                 s_scores = calculate_2026_score(
                     s_info, 
                     selected_sector, 
-                    {"Policy": 50, "Moat": 50}, 
+                    s_manual,  # 使用該股票自己的手動評分
                     sector_avg_data,
-                    st.session_state.weights[s]  # 使用個股自己的權重
+                    st.session_state.weights[s]
                 )
                 
-                # 使用明確的 AI 調整標記（修正問題 1）
                 is_ai_adjusted = st.session_state.ai_adjusted.get(s, False)
                 
                 results.append({
@@ -418,9 +523,10 @@ if info:
                     "評級": get_tier(s_scores["Total"]),
                     "Fwd PE": s_info.get("forwardPE"),
                     "FCF": s_info.get("freeCashflow"),
-                    "AI 調整": "✅" if is_ai_adjusted else "❌"
+                    "AI 調整": "✅" if is_ai_adjusted else "❌",
+                    "政策評分": s_manual["Policy"],
+                    "護城河評分": s_manual["Moat"]
                 })
-        # 使用 st.dataframe 確保大型表格的滾動行為正常
         st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False))
 else:
     st.error("無法獲取股票數據")
