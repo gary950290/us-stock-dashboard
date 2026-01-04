@@ -12,6 +12,7 @@ import json
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=gemini_key)
+    # 使用環境支援的模型
     model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
 except Exception as e:
     st.error("❌ 找不到 GEMINI_API_KEY。請在 Streamlit Secrets 中設定。")
@@ -154,13 +155,13 @@ def calculate_2026_score(info, sector, manual_scores, sector_avg_data):
 # AI 洞察 (Gemini)
 # =========================
 def get_ai_market_insight(symbol, sector, current_weights):
-    st.info("💡 偵錯訊息：開始嘗試獲取股票新聞和呼叫 Gemini API...") # 偵錯訊息
+    # 偵錯訊息已不再需要，將其移除以保持介面清潔
+    # st.info("💡 偵錯訊息：開始嘗試獲取股票新聞和呼叫 Gemini API...") 
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news[:5]
         
-        # --- FIX: 安全地提取新聞標題，避免 KeyError: 'title' ---
-        # 僅提取是字典且包含 'title' 鍵的項目
+        # FIX: 安全地提取新聞標題，避免 KeyError: 'title'
         safe_news_titles = [f"- {n['title']}" for n in news if isinstance(n, dict) and 'title' in n]
         
         if safe_news_titles:
@@ -168,7 +169,6 @@ def get_ai_market_insight(symbol, sector, current_weights):
         else:
             # 如果找不到有效新聞，提供一個 fallback 提示
             news_text = f"找不到最新新聞或新聞格式有誤。請基於 {symbol} 過去一週的行業趨勢進行一般性分析。"
-        # --- END FIX ---
         
         prompt = f"""
         你是一位資深美股分析師。請針對 {symbol} ({sector}產業) 的最新新聞進行 2026 投資評級分析：
@@ -206,7 +206,7 @@ selected_stock = st.sidebar.selectbox("選擇股票", SECTORS[selected_sector])
 if "weights" not in st.session_state:
     st.session_state.weights = {s: SECTOR_CONFIG[s]["weights"].copy() for s in SECTORS.keys()}
 
-# --- 【新增】手動評分持久化邏輯 ---
+# --- 手動評分持久化邏輯 ---
 
 # 1. 初始化用於儲存所有股票手動評分的核心狀態
 if "manual_scores" not in st.session_state:
@@ -217,21 +217,19 @@ current_stock = selected_stock
 if current_stock not in st.session_state.manual_scores:
     st.session_state.manual_scores[current_stock] = {"Policy": 50, "Moat": 50}
 
-# 3. 定義回調函數，在滑塊變動時，更新 session_state.manual_scores 中的值
+# 3. 定義回調函數
 def update_policy_score():
-    # 使用 slider 的 key 來存取變動後的值，並更新到持久化 storage 中
     st.session_state.manual_scores[current_stock]["Policy"] = st.session_state[f"{current_stock}_p"]
 
 def update_moat_score():
     st.session_state.manual_scores[current_stock]["Moat"] = st.session_state[f"{current_stock}_m"]
     
-# 4. 從 session state 中讀取當前股票的持久化值，作為滑塊的初始值
+# 4. 從 session state 中讀取當前股票的持久化值
 policy_default = st.session_state.manual_scores[current_stock]["Policy"]
 moat_default = st.session_state.manual_scores[current_stock]["Moat"]
 
 # 手動評分
 st.sidebar.subheader("✏️ 手動評分 (20%)")
-# 滑塊使用持久化的值作為初始值 (value)，並在變動時觸發回調函數
 m_policy = st.sidebar.slider(
     "政策受益度", 
     0, 
@@ -248,21 +246,13 @@ m_moat = st.sidebar.slider(
     key=f"{current_stock}_m", 
     on_change=update_moat_score
 )
-# --- 【結束】手動評分持久化邏輯 ---
+# --- 結束手動評分持久化邏輯 ---
 
 if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
-    # --- 【偵錯點 1：立即確認按鈕觸發】 ---
     st.success("✅ 按鈕已觸發：正在進入 AI 分析流程。")
-    # ------------------------------------
     
     with st.spinner("Gemini 正在分析 2026 投資影響..."):
         insight = get_ai_market_insight(selected_stock, selected_sector, st.session_state.weights[selected_sector])
-        
-        # --- 【偵錯點 2：分析結果確認】 ---
-        if insight is None:
-            # 由於錯誤處理已在 get_ai_market_insight 內部完成，此處只需顯示總結訊息
-            pass 
-        # ------------------------------------
             
         if insight:
             st.session_state.last_insight = insight
@@ -271,6 +261,7 @@ if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
 # 顯示 AI 洞察
 if "last_insight" in st.session_state:
     ins = st.session_state.last_insight
+    # 修正：將 AI 洞察置頂顯示
     st.info(f"### AI 2026 投資洞察 ({ins['sentiment']})\n**總結**: {ins['summary']}\n\n**權重調整理由**: {ins['reason']}")
 
 # 獲取數據並計算
@@ -295,7 +286,8 @@ if info:
         "得分": [scores["Valuation"], scores["Quality"], scores["Growth"], scores["MoatPolicy"]],
         "權重": [st.session_state.weights[selected_sector][k] for k in ["Valuation", "Quality", "Growth", "MoatPolicy"]]
     })
-    st.table(detail_data)
+    # FIX: 使用 st.dataframe 替換 st.table 以獲得更好的響應性
+    st.dataframe(detail_data) 
     
     if scores["Adjustment"] != 0:
         st.warning(f"⚠️ 觸發懲罰/加成機制：總分已調整 {scores['Adjustment']} 分")
@@ -315,7 +307,8 @@ if info:
                     "Fwd PE": s_info.get("forwardPE"),
                     "FCF": s_info.get("freeCashflow")
                 })
-        st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False))
+        # FIX: 使用 st.dataframe 確保大型表格的滾動行為正常
+        st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False)) 
 else:
     st.error("無法獲取股票數據")
 
