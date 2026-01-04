@@ -2,56 +2,12 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import google.generativeai as genai
 import json
 
 # 設定重試次數
 MAX_RETRIES = 3 
-
-# =========================
-# API 速率限制管理
-# =========================
-class APIRateLimiter:
-    """管理 Gemini API 的速率限制"""
-    def __init__(self):
-        self.last_call_time = None
-        self.call_count = 0
-        self.reset_time = None
-        
-    def wait_if_needed(self):
-        """在調用 API 前等待，避免超過速率限制"""
-        now = datetime.now()
-        
-        # 如果是新的一天，重置計數器
-        if self.reset_time and now > self.reset_time:
-            self.call_count = 0
-            self.reset_time = None
-        
-        # 如果上次調用時間不到 3 秒，等待
-        if self.last_call_time:
-            elapsed = (now - self.last_call_time).total_seconds()
-            if elapsed < 3:  # 每次調用間隔至少 3 秒
-                wait_time = 3 - elapsed
-                time.sleep(wait_time)
-        
-        self.last_call_time = datetime.now()
-        self.call_count += 1
-        
-    def record_quota_exceeded(self, retry_delay_seconds):
-        """記錄配額超出的情況"""
-        self.reset_time = datetime.now() + timedelta(seconds=retry_delay_seconds)
-        
-    def get_status(self):
-        """獲取當前狀態"""
-        return {
-            "call_count": self.call_count,
-            "reset_time": self.reset_time
-        }
-
-# 初始化速率限制器
-if "rate_limiter" not in st.session_state:
-    st.session_state.rate_limiter = APIRateLimiter()
 
 # =========================
 # 初始化 Gemini API
@@ -128,85 +84,51 @@ SECTOR_CONFIG = {
 }
 
 # =========================
-# 持久化儲存函數
-# =========================
-def save_to_storage(key, data):
-    """將數據保存到 Streamlit 持久化儲存"""
-    try:
-        st.session_state[f"persistent_{key}"] = json.dumps(data)
-    except Exception as e:
-        st.warning(f"儲存 {key} 失敗: {e}")
-
-def load_from_storage(key, default=None):
-    """從 Streamlit 持久化儲存讀取數據"""
-    try:
-        stored_key = f"persistent_{key}"
-        if stored_key in st.session_state:
-            return json.loads(st.session_state[stored_key])
-    except Exception as e:
-        st.warning(f"讀取 {key} 失敗: {e}")
-    return default
-
-# =========================
 # 工具函數
 # =========================
-@st.cache_data(ttl=300, show_spinner=False)
-def get_stock_data(symbol, retry_count=3):
-    """獲取股票數據，包含重試機制和詳細錯誤處理"""
-    for attempt in range(retry_count):
-        try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            
-            # 檢查是否獲取到有效數據
-            if info and len(info) > 5:  # 確保獲取到足夠的數據
-                return info
-            else:
-                if attempt < retry_count - 1:
-                    time.sleep(1)  # 等待後重試
-                    continue
-                else:
-                    print(f"WARNING: {symbol} 返回數據不完整")
-                    return None
-                    
-        except Exception as e:
-            print(f"ERROR getting data for {symbol} (attempt {attempt + 1}): {e}")
-            if attempt < retry_count - 1:
-                time.sleep(1)
-            else:
-                return None
-    return None
+@st.cache_data(ttl=300)
+def get_stock_data(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        return ticker.info
+    except:
+        return None
 
 def get_tier(score):
     if score >= 80: return "Tier 1 (強烈優先配置) 🚀"
     elif score >= 60: return "Tier 2 (穩健配置) ⚖️"
     else: return "Tier 3 (觀察或減碼) ⚠️"
 
+def weights_are_equal(w1, w2, tolerance=0.001):
+    """比較兩個權重字典是否相等（考慮浮點數誤差）"""
+    if set(w1.keys()) != set(w2.keys()):
+        return False
+    for key in w1.keys():
+        if abs(w1[key] - w2[key]) > tolerance:
+            return False
+    return True
+
 # =========================
 # 評分引擎 (2026 專業邏輯)
 # =========================
 def calculate_2026_score(info, sector, manual_scores, sector_avg_data, stock_weights):
-    """計算股票評分，增加數據驗證"""
-    if not info:
-        return None
-        
-    symbol = info.get("symbol", "UNKNOWN")
+    symbol = info.get("symbol")
     
     # 1. 前瞻估值 (Valuation)
     fwd_pe = info.get("forwardPE")
     avg_fwd_pe = sector_avg_data.get("avg_fwd_pe", 25)
     val_score = 50
-    if fwd_pe and fwd_pe > 0:
+    if fwd_pe:
         # 標準化：個股 Fwd PE / 產業平均
         val_score = max(0, min(100, (avg_fwd_pe / fwd_pe) * 50))
         if sector == "Mag7" and fwd_pe < avg_fwd_pe * 0.9: # 低於均值 10% 以上
             val_score = min(100, val_score * 1.2)
     
     # 2. 獲利質量 (Quality)
-    roe = info.get("returnOnEquity", 0) or 0
-    fcf = info.get("freeCashflow", 0) or 0
-    gross_margin = info.get("grossMargins", 0) or 0
-    op_margin = info.get("operatingMargins", 0) or 0
+    roe = info.get("returnOnEquity", 0)
+    fcf = info.get("freeCashflow", 0)
+    gross_margin = info.get("grossMargins", 0)
+    op_margin = info.get("operatingMargins", 0)
     
     qual_score = 50
     if sector == "Mag7":
@@ -223,7 +145,7 @@ def calculate_2026_score(info, sector, manual_scores, sector_avg_data, stock_wei
         qual_score = 50 # 關注 Burn Rate，預設中性
         
     # 3. 成長動能 (Growth)
-    rev_growth = info.get("revenueGrowth", 0) or 0
+    rev_growth = info.get("revenueGrowth", 0)
     growth_score = max(0, min(100, rev_growth * 200))
     
     if sector == "Mag7" and rev_growth > 0.2: growth_score *= 1.2
@@ -260,27 +182,16 @@ def calculate_2026_score(info, sector, manual_scores, sector_avg_data, stock_wei
     }
 
 # =========================
-# AI 洞察 (Gemini) - 增強版速率控制
+# AI 洞察 (Gemini)
 # =========================
 
 def call_gemini_with_retry(prompt, status, max_retries=MAX_RETRIES):
     """實作指數退避重試機制，確保 API 呼叫的穩定性。"""
     delay = 2  # 初始延遲 (秒)
-    
     for attempt in range(max_retries):
         try:
-            # 檢查速率限制
-            limiter_status = st.session_state.rate_limiter.get_status()
-            if limiter_status["reset_time"] and datetime.now() < limiter_status["reset_time"]:
-                remaining = (limiter_status["reset_time"] - datetime.now()).total_seconds()
-                status.error(f"⏳ API 配額已用盡，需等待 {int(remaining)} 秒後重試")
-                return None
-            
-            # 速率限制等待
-            st.session_state.rate_limiter.wait_if_needed()
-            
-            # 顯示重試狀態
-            status.write(f"🤖 嘗試呼叫 Gemini API (第 {attempt + 1} 次，已使用 {limiter_status['call_count']} 次)...")
+            # 顯示重試狀態，更新 status 容器內的文字
+            status.write(f"🤖 嘗試呼叫 Gemini API (第 {attempt + 1} 次嘗試)...")
             
             # 執行 API 呼叫
             response = model.generate_content(prompt)
@@ -297,33 +208,15 @@ def call_gemini_with_retry(prompt, status, max_retries=MAX_RETRIES):
             return insight
 
         except Exception as e:
-            error_str = str(e)
-            
-            # 檢查是否是配額錯誤
-            if "ResourceExhausted" in error_str or "429" in error_str or "quota" in error_str.lower():
-                # 提取重試延遲時間
-                retry_delay = 3600  # 預設 1 小時
-                if "retry_delay" in error_str:
-                    try:
-                        import re
-                        match = re.search(r'seconds: (\d+)', error_str)
-                        if match:
-                            retry_delay = int(match.group(1))
-                    except:
-                        pass
-                
-                st.session_state.rate_limiter.record_quota_exceeded(retry_delay)
-                status.error(f"⚠️ Gemini API 配額已用盡！\n\n免費版限制：每天 20 次請求\n需等待約 {retry_delay // 60} 分鐘後重試\n\n💡 建議：\n1. 使用「手動評分」功能代替 AI 分析\n2. 明天再使用批次分析功能\n3. 或升級到 Gemini API 付費方案")
-                return None
-            
-            # 其他錯誤的處理
             if attempt < max_retries - 1:
-                status.warning(f"⚠️ 呼叫失敗，將在 {delay} 秒後重試。錯誤: {type(e).__name__}")
+                # 如果不是最後一次嘗試，等待並重試
+                status.warning(f"⚠️ 呼叫失敗，將在 {delay} 秒後重試。錯誤類型: {type(e).__name__}")
                 time.sleep(delay)
                 delay *= 2  # 指數退避
             else:
-                status.error(f"❌ Gemini 分析失敗：{type(e).__name__} - {error_str[:200]}")
-                print(f"DEBUG ERROR: call_gemini_with_retry failed. Error: {e}")
+                # 最後一次嘗試失敗，顯示最終錯誤
+                status.error(f"❌ Gemini 分析失敗：連續重試 {max_retries} 次後仍失敗。錯誤類型: {type(e).__name__} - {e}")
+                print(f"DEBUG ERROR: call_gemini_with_retry failed after {max_retries} attempts. Error: {e}")
                 return None
     return None
 
@@ -367,174 +260,55 @@ def get_ai_market_insight(symbol, sector, current_weights, status):
         return None
 
 # =========================
-# 批次 AI 分析函數
-# =========================
-def batch_analyze_sector(sector, progress_container):
-    """批次分析整個產業的所有股票"""
-    stocks = SECTORS[sector]
-    total = len(stocks)
-    results = {}
-    
-    progress_bar = progress_container.progress(0)
-    status_text = progress_container.empty()
-    
-    # 檢查配額狀態
-    limiter_status = st.session_state.rate_limiter.get_status()
-    if limiter_status["reset_time"] and datetime.now() < limiter_status["reset_time"]:
-        remaining = (limiter_status["reset_time"] - datetime.now()).total_seconds()
-        status_text.error(f"⚠️ API 配額已用盡，需等待約 {int(remaining // 60)} 分鐘")
-        return results
-    
-    for idx, stock in enumerate(stocks):
-        status_text.write(f"🔍 正在分析 {stock} ({idx + 1}/{total})...")
-        
-        # 先檢查是否能獲取股票數據
-        stock_info = get_stock_data(stock)
-        if not stock_info:
-            status_text.warning(f"⚠️ {stock} 數據獲取失敗，跳過分析")
-            results[stock] = {"error": "無法獲取股票數據"}
-            progress_bar.progress((idx + 1) / total)
-            continue
-        
-        with st.status(f"分析 {stock}", expanded=False) as status:
-            insight = get_ai_market_insight(
-                stock,
-                sector,
-                st.session_state.weights[stock],
-                status
-            )
-            
-            if insight:
-                results[stock] = {
-                    "insight": insight,
-                    "weights": insight["suggested_weights"],
-                    "timestamp": datetime.now().isoformat()
-                }
-                # 更新權重和標記
-                st.session_state.weights[stock] = insight["suggested_weights"]
-                st.session_state.stock_insights[stock] = insight
-                st.session_state.ai_adjusted[stock] = True
-                
-                # 持久化儲存
-                save_to_storage("weights", st.session_state.weights)
-                save_to_storage("stock_insights", st.session_state.stock_insights)
-                save_to_storage("ai_adjusted", st.session_state.ai_adjusted)
-                
-                status.update(label=f"✅ {stock} 分析完成", state="complete")
-            else:
-                results[stock] = {"error": "分析失敗或配額用盡"}
-                status.update(label=f"❌ {stock} 分析失敗", state="error")
-                
-                # 如果是配額問題，停止批次處理
-                if st.session_state.rate_limiter.get_status()["reset_time"]:
-                    status_text.error(f"⚠️ API 配額用盡，批次分析中止於第 {idx + 1} 個股票")
-                    break
-        
-        progress_bar.progress((idx + 1) / total)
-    
-    status_text.write(f"✅ {sector} 產業批次分析完成（或因配額限制提前結束）")
-    return results
-
-# =========================
-# 初始化持久化數據
-# =========================
-
-# 初始化按個股儲存的權重（優先從持久化儲存讀取）
-if "weights" not in st.session_state:
-    loaded_weights = load_from_storage("weights")
-    if loaded_weights:
-        st.session_state.weights = loaded_weights
-    else:
-        st.session_state.weights = {}
-        for sector, stocks in SECTORS.items():
-            for stock in stocks:
-                st.session_state.weights[stock] = SECTOR_CONFIG[sector]["weights"].copy()
-
-# 初始化按個股儲存的 AI 洞察
-if "stock_insights" not in st.session_state:
-    loaded_insights = load_from_storage("stock_insights")
-    if loaded_insights:
-        st.session_state.stock_insights = loaded_insights
-    else:
-        st.session_state.stock_insights = {}
-
-# 初始化 AI 調整標記
-if "ai_adjusted" not in st.session_state:
-    loaded_adjusted = load_from_storage("ai_adjusted")
-    if loaded_adjusted:
-        st.session_state.ai_adjusted = loaded_adjusted
-    else:
-        st.session_state.ai_adjusted = {}
-        for sector, stocks in SECTORS.items():
-            for stock in stocks:
-                st.session_state.ai_adjusted[stock] = False
-
-# 初始化手動評分（持久化儲存）
-if "manual_scores" not in st.session_state:
-    loaded_manual = load_from_storage("manual_scores")
-    if loaded_manual:
-        st.session_state.manual_scores = loaded_manual
-    else:
-        st.session_state.manual_scores = {}
-
-# =========================
 # UI 佈局
 # =========================
 st.sidebar.header("⚙️ 2026 評比設定")
-
-# 顯示 API 使用狀態
-limiter_status = st.session_state.rate_limiter.get_status()
-if limiter_status["reset_time"] and datetime.now() < limiter_status["reset_time"]:
-    remaining = (limiter_status["reset_time"] - datetime.now()).total_seconds()
-    st.sidebar.error(f"⏳ API 配額已用盡\n等待時間：約 {int(remaining // 60)} 分鐘")
-else:
-    st.sidebar.info(f"📊 今日已使用 AI 分析：{limiter_status['call_count']} 次\n(免費版限制：20 次/天)")
-
-# 新增批次分析按鈕
-st.sidebar.subheader("🚀 批次 AI 分析")
-batch_sector = st.sidebar.selectbox("選擇要批次分析的產業", list(SECTORS.keys()), key="batch_sector")
-
-# 計算該產業股票數量
-sector_stock_count = len(SECTORS[batch_sector])
-st.sidebar.caption(f"該產業共 {sector_stock_count} 支股票，將使用 {sector_stock_count} 次 API 配額")
-
-if st.sidebar.button("🔥 一鍵分析整個產業", type="primary"):
-    progress_container = st.sidebar.container()
-    with st.spinner(f"正在批次分析 {batch_sector} 產業..."):
-        results = batch_analyze_sector(batch_sector, progress_container)
-    
-    # 統計成功和失敗的數量
-    success_count = sum(1 for r in results.values() if "error" not in r)
-    fail_count = len(results) - success_count
-    
-    st.sidebar.success(f"✅ 分析結束！成功: {success_count}, 失敗/跳過: {fail_count}")
-
-st.sidebar.divider()
-
 selected_sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()))
 selected_stock = st.sidebar.selectbox("選擇股票", SECTORS[selected_sector])
 
-# 確保當前選定股票的評分已初始化（預設 50）
+# 初始化按個股儲存的權重
+if "weights" not in st.session_state:
+    st.session_state.weights = {}
+    for sector, stocks in SECTORS.items():
+        for stock in stocks:
+            # 每支股票都有自己的權重副本
+            st.session_state.weights[stock] = SECTOR_CONFIG[sector]["weights"].copy()
+
+# 初始化按個股儲存的 AI 洞察（修正問題 2）
+if "stock_insights" not in st.session_state:
+    st.session_state.stock_insights = {}
+
+# 初始化 AI 調整標記（修正問題 1）
+if "ai_adjusted" not in st.session_state:
+    st.session_state.ai_adjusted = {}
+    for sector, stocks in SECTORS.items():
+        for stock in stocks:
+            st.session_state.ai_adjusted[stock] = False
+
+# --- 手動評分持久化邏輯 ---
+
+# 1. 初始化用於儲存所有股票手動評分的核心狀態
+if "manual_scores" not in st.session_state:
+    st.session_state.manual_scores = {}
+
+# 2. 確保當前選定股票的評分已初始化（預設 50）
 current_stock = selected_stock
 if current_stock not in st.session_state.manual_scores:
     st.session_state.manual_scores[current_stock] = {"Policy": 50, "Moat": 50}
 
-# 定義回調函數（包含持久化）
+# 3. 定義回調函數
 def update_policy_score():
     st.session_state.manual_scores[current_stock]["Policy"] = st.session_state[f"{current_stock}_p"]
-    save_to_storage("manual_scores", st.session_state.manual_scores)
 
 def update_moat_score():
     st.session_state.manual_scores[current_stock]["Moat"] = st.session_state[f"{current_stock}_m"]
-    save_to_storage("manual_scores", st.session_state.manual_scores)
     
-# 從 session state 中讀取當前股票的持久化值
+# 4. 從 session state 中讀取當前股票的持久化值
 policy_default = st.session_state.manual_scores[current_stock]["Policy"]
 moat_default = st.session_state.manual_scores[current_stock]["Moat"]
 
 # 手動評分
 st.sidebar.subheader("✏️ 手動評分 (20%)")
-st.sidebar.caption("💡 配額用盡時，可使用手動評分代替 AI 分析")
 m_policy = st.sidebar.slider(
     "政策受益度", 
     0, 
@@ -551,10 +325,15 @@ m_moat = st.sidebar.slider(
     key=f"{current_stock}_m", 
     on_change=update_moat_score
 )
+# --- 結束手動評分持久化邏輯 ---
 
-# 單股 AI 分析按鈕
-if st.sidebar.button("🤖 分析當前股票"):
+# 使用 st.status 來處理所有狀態顯示
+if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
+    
+    # 使用 st.status，它會自動處理 spinner、狀態更新和最終狀態顯示
     with st.status("🤖 正在執行 AI 投資分析...", expanded=True) as status:
+        
+        # 傳入「當前股票」的權重，而非產業通用權重
         insight = get_ai_market_insight(
             selected_stock, 
             selected_sector, 
@@ -563,139 +342,85 @@ if st.sidebar.button("🤖 分析當前股票"):
         )
         
         if insight:
+            # 儲存到個股專屬的洞察（修正問題 2）
             st.session_state.stock_insights[selected_stock] = insight
+            # 只更新「當前股票」的權重
             st.session_state.weights[selected_stock] = insight["suggested_weights"]
+            # 標記該股票已被 AI 調整（修正問題 1）
             st.session_state.ai_adjusted[selected_stock] = True
-            
-            # 持久化儲存
-            save_to_storage("weights", st.session_state.weights)
-            save_to_storage("stock_insights", st.session_state.stock_insights)
-            save_to_storage("ai_adjusted", st.session_state.ai_adjusted)
-            
+            # 成功完成，更新最終狀態
             status.update(label="✅ 分析完成！評級與權重已更新。", state="complete", expanded=False)
         else:
-            status.update(label="❌ 分析失敗或配額用盡", state="error")
+            # 失敗，更新最終狀態
+            status.update(label="❌ 分析失敗：請檢查上面的錯誤訊息。", state="error")
 
-# 新增：清除數據按鈕
-st.sidebar.divider()
-if st.sidebar.button("🗑️ 清除所有 AI 分析記錄", type="secondary"):
-    # 重置 AI 相關數據
-    for sector, stocks in SECTORS.items():
-        for stock in stocks:
-            st.session_state.weights[stock] = SECTOR_CONFIG[sector]["weights"].copy()
-            st.session_state.ai_adjusted[stock] = False
-    st.session_state.stock_insights = {}
-    
-    # 持久化儲存
-    save_to_storage("weights", st.session_state.weights)
-    save_to_storage("stock_insights", st.session_state.stock_insights)
-    save_to_storage("ai_adjusted", st.session_state.ai_adjusted)
-    
-    st.sidebar.success("✅ 已清除所有 AI 分析記錄（手動評分保留）")
-    st.rerun()
 
-# 顯示當前股票的 AI 洞察
+# 顯示當前股票的 AI 洞察（修正問題 2）
 if selected_stock in st.session_state.stock_insights:
     ins = st.session_state.stock_insights[selected_stock]
     st.info(f"### 🤖 AI 2026 投資洞察 - {selected_stock} ({ins['sentiment']})\n**總結**: {ins['summary']}\n\n**權重調整理由**: {ins['reason']}")
 
 # 獲取數據並計算
-with st.spinner(f"正在載入 {selected_stock} 數據..."):
-    info = get_stock_data(selected_stock)
-
+info = get_stock_data(selected_stock)
 if info:
+    # 模擬產業平均數據 (實際應從多股平均獲取)
     sector_avg_data = {"avg_fwd_pe": 25} 
     
+    # 評分計算使用當前股票的權重
     scores = calculate_2026_score(
         info, 
         selected_sector, 
         {"Policy": m_policy, "Moat": m_moat}, 
         sector_avg_data,
-        st.session_state.weights[selected_stock]
+        st.session_state.weights[selected_stock]  # 傳入個股權重
     )
     
-    if scores:  # 確保評分計算成功
-        col1, col2, col3 = st.columns(3)
-        col1.metric("🎯 綜合評分", scores["Total"])
-        col2.metric("投資評級", get_tier(scores["Total"]))
-        col3.metric("前瞻 PE", info.get("forwardPE", "N/A"))
-        
-        st.subheader(f"📊 {selected_sector} 評分維度 (焦點：{SECTOR_CONFIG[selected_sector]['focus']})")
-        
-        detail_data = pd.DataFrame({
-            "維度": ["前瞻估值 (Valuation)", "獲利質量 (Quality)", "成長動能 (Growth)", "政策與護城河 (MoatPolicy)"],
-            "得分": [scores["Valuation"], scores["Quality"], scores["Growth"], scores["MoatPolicy"]],
-            "權重": [st.session_state.weights[selected_stock][k] for k in ["Valuation", "Quality", "Growth", "MoatPolicy"]]
-        })
-        st.dataframe(detail_data) 
-        
-        if scores["Adjustment"] != 0:
-            st.warning(f"⚠️ 觸發懲罰/加成機制：總分已調整 {scores['Adjustment']} 分")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🎯 綜合評分", scores["Total"])
+    col2.metric("投資評級", get_tier(scores["Total"]))
+    col3.metric("前瞻 PE", info.get("forwardPE", "N/A"))
+    
+    st.subheader(f"📊 {selected_sector} 評分維度 (焦點：{SECTOR_CONFIG[selected_sector]['focus']})")
+    
+    # 顯示維度細節 - 使用當前股票的權重
+    detail_data = pd.DataFrame({
+        "維度": ["前瞻估值 (Valuation)", "獲利質量 (Quality)", "成長動能 (Growth)", "政策與護城河 (MoatPolicy)"],
+        "得分": [scores["Valuation"], scores["Quality"], scores["Growth"], scores["MoatPolicy"]],
+        "權重": [st.session_state.weights[selected_stock][k] for k in ["Valuation", "Quality", "Growth", "MoatPolicy"]]
+    })
+    # 使用 st.dataframe 確保大型表格的滾動行為正常
+    st.dataframe(detail_data) 
+    
+    if scores["Adjustment"] != 0:
+        st.warning(f"⚠️ 觸發懲罰/加成機制：總分已調整 {scores['Adjustment']} 分")
 
-        # 產業橫向比較
-        with st.expander(f"🏭 查看 {selected_sector} 產業橫向排序"):
-            results = []
-            failed_stocks = []
-            
-            for s in SECTORS[selected_sector]:
-                s_info = get_stock_data(s)
-                if s_info:
-                    # 獲取該股票的手動評分（如果沒有則使用預設值 50）
-                    s_manual = st.session_state.manual_scores.get(s, {"Policy": 50, "Moat": 50})
-                    
-                    s_scores = calculate_2026_score(
-                        s_info, 
-                        selected_sector, 
-                        s_manual,
-                        sector_avg_data,
-                        st.session_state.weights[s]
-                    )
-                    
-                    if s_scores:  # 確保評分計算成功
-                        is_ai_adjusted = st.session_state.ai_adjusted.get(s, False)
-                        
-                        results.append({
-                            "股票": s,
-                            "綜合分數": s_scores["Total"],
-                            "評級": get_tier(s_scores["Total"]),
-                            "Fwd PE": s_info.get("forwardPE", "N/A"),
-                            "FCF": s_info.get("freeCashflow", "N/A"),
-                            "AI 調整": "✅" if is_ai_adjusted else "❌",
-                            "政策評分": s_manual["Policy"],
-                            "護城河評分": s_manual["Moat"]
-                        })
-                else:
-                    failed_stocks.append(s)
-            
-            if results:
-                st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False))
-            
-            if failed_stocks:
-                st.warning(f"⚠️ 以下股票數據獲取失敗：{', '.join(failed_stocks)}")
-    else:
-        st.error(f"❌ 無法計算 {selected_stock} 的評分，數據可能不完整")
+    # 產業橫向比較
+    with st.expander(f"🏭 查看 {selected_sector} 產業橫向排序"):
+        results = []
+        for s in SECTORS[selected_sector]:
+            s_info = get_stock_data(s)
+            if s_info:
+                # 使用該股票自己的權重進行評分
+                s_scores = calculate_2026_score(
+                    s_info, 
+                    selected_sector, 
+                    {"Policy": 50, "Moat": 50}, 
+                    sector_avg_data,
+                    st.session_state.weights[s]  # 使用個股自己的權重
+                )
+                
+                # 使用明確的 AI 調整標記（修正問題 1）
+                is_ai_adjusted = st.session_state.ai_adjusted.get(s, False)
+                
+                results.append({
+                    "股票": s,
+                    "綜合分數": s_scores["Total"],
+                    "評級": get_tier(s_scores["Total"]),
+                    "Fwd PE": s_info.get("forwardPE"),
+                    "FCF": s_info.get("freeCashflow"),
+                    "AI 調整": "✅" if is_ai_adjusted else "❌"
+                })
+        # 使用 st.dataframe 確保大型表格的滾動行為正常
+        st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False))
 else:
-    st.error(f"❌ 無法獲取 {selected_stock} 的股票數據。請檢查：\n1. 股票代碼是否正確\n2. 網路連線是否正常\n3. 稍後再試")
-    st.info("💡 提示：某些股票（特別是小型股或新上市公司）可能在 Yahoo Finance 上的數據不完整")
-
-# =========================
-# 頁面底部：API 使用說明
-# =========================
-st.divider()
-st.caption("""
-### 📌 關於 Gemini API 配額限制
-
-**免費版限制：**
-- 每天最多 20 次 AI 分析請求
-- 每次請求間隔至少 3 秒
-
-**建議使用策略：**
-1. **優先使用手動評分**：政策受益度和護城河粘性可手動調整，不消耗 API 配額
-2. **選擇性 AI 分析**：只對重點關注的股票使用 AI 分析
-3. **批次分析規劃**：如果要分析整個產業，建議選擇股票數量較少的產業（如 Mag7 只有 7 支）
-4. **明天再試**：配額每天重置，可以分散在多天進行分析
-
-**如需更多配額：**
-- 升級到 Gemini API 付費方案
-- 訪問：https://ai.google.dev/pricing
-""")
+    st.error("無法獲取股票數據")
