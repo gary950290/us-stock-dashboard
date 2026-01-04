@@ -13,7 +13,6 @@ MAX_RETRIES = 3
 # OpenRouter 免費模型列表 (按優先順序)
 
 FREE_MODELS = [
-“google/gemini-2.0-flash-exp:free”,
 “meta-llama/llama-3.1-8b-instruct:free”,
 “mistralai/mistral-7b-instruct:free”,
 “openchat/openchat-7b:free”
