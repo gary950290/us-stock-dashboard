@@ -141,17 +141,26 @@ if m_policy != st.session_state.manual_scores[selected_stock]["Policy"] or \
 if st.sidebar.button("🤖 啟動 2026 深度新聞分析 (8則)"):
     with st.status(f"正在對 {selected_stock} 進行深度評估...", expanded=True) as status:
         info, news = get_stock_data(selected_stock)
-        # 安全地提取標題，若無 'title' 鍵則跳過或顯示未知
-news_titles = [f"- {n['title']}" for n in news[:8] if isinstance(n, dict) and 'title' in n]
-
-# 如果完全沒有新聞標題，給予預設值避免後續 AI prompt 空白
-if not news_titles:
-    news_titles = ["暫無相關新聞標題"]
-
-        news_context = "\n".join(news_titles)
         
+        # --- 修正後的安全提取邏輯 ---
+        if news:
+            news_titles = []
+            for n in news[:8]:
+                if isinstance(n, dict) and 'title' in n:
+                    news_titles.append(f"- {n['title']}")
+                elif isinstance(n, dict) and 'summary' in n: # 備案：如果沒有標題但有摘要
+                    news_titles.append(f"- [摘要] {n['summary'][:50]}...")
+            
+            if not news_titles:
+                news_titles = ["無法取得有效新聞標題"]
+        else:
+            news_titles = ["目前無最新相關新聞"]
+            
+        news_context = "\n".join(news_titles)
+        # ------------------------
+
         prompt = f"""
-        你是資深美股分析師。請針對 {selected_stock} 的 8 則最新動態與 2026 年美國政策環境（AI Action Plan, 晶片法案補貼）進行分析。
+        你是資深美股分析師。請針對 {selected_stock} 的最新動態與 2026 年美國政策環境進行分析。
         最新動態：
         {news_context}
         
