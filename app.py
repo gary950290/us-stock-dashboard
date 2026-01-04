@@ -215,7 +215,7 @@ def get_ai_market_insight(symbol, sector, current_weights, status):
     """準備提示詞並呼叫帶有重試機制的 API 函數。"""
     try:
         ticker = yf.Ticker(symbol)
-        news = ticker.news[:5]
+        news = ticker.news[:8]
         
         # 安全地提取新聞標題
         safe_news_titles = [f"- {n['title']}" for n in news if isinstance(n, dict) and 'title' in n]
