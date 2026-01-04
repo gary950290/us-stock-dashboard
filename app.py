@@ -106,13 +106,32 @@ def load_from_storage(key, default=None):
 # =========================
 # 工具函數
 # =========================
-@st.cache_data(ttl=300)
-def get_stock_data(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        return ticker.info
-    except:
-        return None
+@st.cache_data(ttl=300, show_spinner=False)
+def get_stock_data(symbol, retry_count=3):
+    """獲取股票數據，包含重試機制和詳細錯誤處理"""
+    for attempt in range(retry_count):
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            
+            # 檢查是否獲取到有效數據
+            if info and len(info) > 5:  # 確保獲取到足夠的數據
+                return info
+            else:
+                if attempt < retry_count - 1:
+                    time.sleep(1)  # 等待後重試
+                    continue
+                else:
+                    print(f"WARNING: {symbol} 返回數據不完整")
+                    return None
+                    
+        except Exception as e:
+            print(f"ERROR getting data for {symbol} (attempt {attempt + 1}): {e}")
+            if attempt < retry_count - 1:
+                time.sleep(1)
+            else:
+                return None
+    return None
 
 def get_tier(score):
     if score >= 80: return "Tier 1 (強烈優先配置) 🚀"
@@ -123,23 +142,27 @@ def get_tier(score):
 # 評分引擎 (2026 專業邏輯)
 # =========================
 def calculate_2026_score(info, sector, manual_scores, sector_avg_data, stock_weights):
-    symbol = info.get("symbol")
+    """計算股票評分，增加數據驗證"""
+    if not info:
+        return None
+        
+    symbol = info.get("symbol", "UNKNOWN")
     
     # 1. 前瞻估值 (Valuation)
     fwd_pe = info.get("forwardPE")
     avg_fwd_pe = sector_avg_data.get("avg_fwd_pe", 25)
     val_score = 50
-    if fwd_pe:
+    if fwd_pe and fwd_pe > 0:
         # 標準化：個股 Fwd PE / 產業平均
         val_score = max(0, min(100, (avg_fwd_pe / fwd_pe) * 50))
         if sector == "Mag7" and fwd_pe < avg_fwd_pe * 0.9: # 低於均值 10% 以上
             val_score = min(100, val_score * 1.2)
     
     # 2. 獲利質量 (Quality)
-    roe = info.get("returnOnEquity", 0)
-    fcf = info.get("freeCashflow", 0)
-    gross_margin = info.get("grossMargins", 0)
-    op_margin = info.get("operatingMargins", 0)
+    roe = info.get("returnOnEquity", 0) or 0
+    fcf = info.get("freeCashflow", 0) or 0
+    gross_margin = info.get("grossMargins", 0) or 0
+    op_margin = info.get("operatingMargins", 0) or 0
     
     qual_score = 50
     if sector == "Mag7":
@@ -156,7 +179,7 @@ def calculate_2026_score(info, sector, manual_scores, sector_avg_data, stock_wei
         qual_score = 50 # 關注 Burn Rate，預設中性
         
     # 3. 成長動能 (Growth)
-    rev_growth = info.get("revenueGrowth", 0)
+    rev_growth = info.get("revenueGrowth", 0) or 0
     growth_score = max(0, min(100, rev_growth * 200))
     
     if sector == "Mag7" and rev_growth > 0.2: growth_score *= 1.2
@@ -285,6 +308,14 @@ def batch_analyze_sector(sector, progress_container):
     for idx, stock in enumerate(stocks):
         status_text.write(f"🔍 正在分析 {stock} ({idx + 1}/{total})...")
         
+        # 先檢查是否能獲取股票數據
+        stock_info = get_stock_data(stock)
+        if not stock_info:
+            status_text.warning(f"⚠️ {stock} 數據獲取失敗，跳過分析")
+            results[stock] = {"error": "無法獲取股票數據"}
+            progress_bar.progress((idx + 1) / total)
+            continue
+        
         with st.status(f"分析 {stock}", expanded=False) as status:
             insight = get_ai_market_insight(
                 stock,
@@ -377,7 +408,12 @@ if st.sidebar.button("🔥 一鍵分析整個產業", type="primary"):
     progress_container = st.sidebar.container()
     with st.spinner(f"正在批次分析 {batch_sector} 產業..."):
         results = batch_analyze_sector(batch_sector, progress_container)
-    st.sidebar.success(f"✅ {batch_sector} 產業分析完成！共處理 {len(results)} 支股票")
+    
+    # 統計成功和失敗的數量
+    success_count = sum(1 for r in results.values() if "error" not in r)
+    fail_count = len(results) - success_count
+    
+    st.sidebar.success(f"✅ {batch_sector} 產業分析完成！成功: {success_count}, 失敗: {fail_count}")
 
 st.sidebar.divider()
 
@@ -469,7 +505,9 @@ if selected_stock in st.session_state.stock_insights:
     st.info(f"### 🤖 AI 2026 投資洞察 - {selected_stock} ({ins['sentiment']})\n**總結**: {ins['summary']}\n\n**權重調整理由**: {ins['reason']}")
 
 # 獲取數據並計算
-info = get_stock_data(selected_stock)
+with st.spinner(f"正在載入 {selected_stock} 數據..."):
+    info = get_stock_data(selected_stock)
+
 if info:
     sector_avg_data = {"avg_fwd_pe": 25} 
     
@@ -481,52 +519,66 @@ if info:
         st.session_state.weights[selected_stock]
     )
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🎯 綜合評分", scores["Total"])
-    col2.metric("投資評級", get_tier(scores["Total"]))
-    col3.metric("前瞻 PE", info.get("forwardPE", "N/A"))
-    
-    st.subheader(f"📊 {selected_sector} 評分維度 (焦點：{SECTOR_CONFIG[selected_sector]['focus']})")
-    
-    detail_data = pd.DataFrame({
-        "維度": ["前瞻估值 (Valuation)", "獲利質量 (Quality)", "成長動能 (Growth)", "政策與護城河 (MoatPolicy)"],
-        "得分": [scores["Valuation"], scores["Quality"], scores["Growth"], scores["MoatPolicy"]],
-        "權重": [st.session_state.weights[selected_stock][k] for k in ["Valuation", "Quality", "Growth", "MoatPolicy"]]
-    })
-    st.dataframe(detail_data) 
-    
-    if scores["Adjustment"] != 0:
-        st.warning(f"⚠️ 觸發懲罰/加成機制：總分已調整 {scores['Adjustment']} 分")
+    if scores:  # 確保評分計算成功
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🎯 綜合評分", scores["Total"])
+        col2.metric("投資評級", get_tier(scores["Total"]))
+        col3.metric("前瞻 PE", info.get("forwardPE", "N/A"))
+        
+        st.subheader(f"📊 {selected_sector} 評分維度 (焦點：{SECTOR_CONFIG[selected_sector]['focus']})")
+        
+        detail_data = pd.DataFrame({
+            "維度": ["前瞻估值 (Valuation)", "獲利質量 (Quality)", "成長動能 (Growth)", "政策與護城河 (MoatPolicy)"],
+            "得分": [scores["Valuation"], scores["Quality"], scores["Growth"], scores["MoatPolicy"]],
+            "權重": [st.session_state.weights[selected_stock][k] for k in ["Valuation", "Quality", "Growth", "MoatPolicy"]]
+        })
+        st.dataframe(detail_data) 
+        
+        if scores["Adjustment"] != 0:
+            st.warning(f"⚠️ 觸發懲罰/加成機制：總分已調整 {scores['Adjustment']} 分")
 
-    # 產業橫向比較
-    with st.expander(f"🏭 查看 {selected_sector} 產業橫向排序"):
-        results = []
-        for s in SECTORS[selected_sector]:
-            s_info = get_stock_data(s)
-            if s_info:
-                # 獲取該股票的手動評分（如果沒有則使用預設值 50）
-                s_manual = st.session_state.manual_scores.get(s, {"Policy": 50, "Moat": 50})
-                
-                s_scores = calculate_2026_score(
-                    s_info, 
-                    selected_sector, 
-                    s_manual,  # 使用該股票自己的手動評分
-                    sector_avg_data,
-                    st.session_state.weights[s]
-                )
-                
-                is_ai_adjusted = st.session_state.ai_adjusted.get(s, False)
-                
-                results.append({
-                    "股票": s,
-                    "綜合分數": s_scores["Total"],
-                    "評級": get_tier(s_scores["Total"]),
-                    "Fwd PE": s_info.get("forwardPE"),
-                    "FCF": s_info.get("freeCashflow"),
-                    "AI 調整": "✅" if is_ai_adjusted else "❌",
-                    "政策評分": s_manual["Policy"],
-                    "護城河評分": s_manual["Moat"]
-                })
-        st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False))
+        # 產業橫向比較
+        with st.expander(f"🏭 查看 {selected_sector} 產業橫向排序"):
+            results = []
+            failed_stocks = []
+            
+            for s in SECTORS[selected_sector]:
+                s_info = get_stock_data(s)
+                if s_info:
+                    # 獲取該股票的手動評分（如果沒有則使用預設值 50）
+                    s_manual = st.session_state.manual_scores.get(s, {"Policy": 50, "Moat": 50})
+                    
+                    s_scores = calculate_2026_score(
+                        s_info, 
+                        selected_sector, 
+                        s_manual,
+                        sector_avg_data,
+                        st.session_state.weights[s]
+                    )
+                    
+                    if s_scores:  # 確保評分計算成功
+                        is_ai_adjusted = st.session_state.ai_adjusted.get(s, False)
+                        
+                        results.append({
+                            "股票": s,
+                            "綜合分數": s_scores["Total"],
+                            "評級": get_tier(s_scores["Total"]),
+                            "Fwd PE": s_info.get("forwardPE", "N/A"),
+                            "FCF": s_info.get("freeCashflow", "N/A"),
+                            "AI 調整": "✅" if is_ai_adjusted else "❌",
+                            "政策評分": s_manual["Policy"],
+                            "護城河評分": s_manual["Moat"]
+                        })
+                else:
+                    failed_stocks.append(s)
+            
+            if results:
+                st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False))
+            
+            if failed_stocks:
+                st.warning(f"⚠️ 以下股票數據獲取失敗：{', '.join(failed_stocks)}")
+    else:
+        st.error(f"❌ 無法計算 {selected_stock} 的評分，數據可能不完整")
 else:
-    st.error("無法獲取股票數據")
+    st.error(f"❌ 無法獲取 {selected_stock} 的股票數據。請檢查：\n1. 股票代碼是否正確\n2. 網路連線是否正常\n3. 稍後再試")
+    st.info("💡 提示：某些股票（特別是小型股或新上市公司）可能在 Yahoo Finance 上的數據不完整")
