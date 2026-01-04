@@ -4,6 +4,27 @@ import yfinance as yf
 import time
 import requests
 import json
+import os  # 新增：用於判斷檔案是否存在
+
+# =========================
+# 0. 數據持久化配置 (新增)
+# =========================
+VAULT_FILE = "investment_vault_2026.json"
+
+def save_vault():
+    """將當前 session_state 數據寫入 JSON 檔案"""
+    with open(VAULT_FILE, "w", encoding="utf-8") as f:
+        json.dump(st.session_state.stock_vault, f, ensure_ascii=False, indent=4)
+
+def load_vault():
+    """從 JSON 檔案讀取數據，若檔案不存在則回傳空字典"""
+    if os.path.exists(VAULT_FILE):
+        try:
+            with open(VAULT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
 
 # =========================
 # 1. OpenRouter 配置 (2026 免費模型)
@@ -36,11 +57,11 @@ SECTORS = {
 
 DEFAULT_WEIGHTS = {"Valuation": 0.25, "Quality": 0.25, "Growth": 0.30, "MoatPolicy": 0.20}
 
-# 【重要：確保 Vault 結構完整且不被覆蓋】
+# 【重要：優先從檔案讀取舊有數據，避免重置】
 if "stock_vault" not in st.session_state:
-    st.session_state.stock_vault = {}
+    saved_data = load_vault()
+    st.session_state.stock_vault = saved_data if saved_data else {}
 
-# 定義一個函數來統一計算分數，確保儀表板與比較表邏輯一致
 def calculate_score(info, weights, manual):
     if not info: return 0
     fwd_pe = info.get("forwardPE", 25) or 25
@@ -82,17 +103,16 @@ def run_ai_analysis(symbol, sector, status):
     info = get_stock_data(symbol)
     if not info: return False
     
-    # 初始化該股資料夾（如果不存在）
     if symbol not in st.session_state.stock_vault:
         st.session_state.stock_vault[symbol] = {"manual": {"Policy": 50, "Moat": 50}, "weights": DEFAULT_WEIGHTS.copy(), "insight": None}
     
-    current_w = st.session_state.stock_vault[symbol]["weights"]
     prompt = f"分析 {symbol} ({sector})。數據: PE={info.get('forwardPE')}, ROE={info.get('returnOnEquity')}。請微調權重(總和1.0)。回傳JSON: {{'sentiment': '...', 'summary': '...', 'suggested_weights': {{'Valuation': f, 'Quality': f, 'Growth': f, 'MoatPolicy': f}}, 'reason': '...'}}"
     
     insight = call_openrouter(prompt, status)
     if insight:
         st.session_state.stock_vault[symbol]["weights"] = insight["suggested_weights"]
         st.session_state.stock_vault[symbol]["insight"] = insight
+        save_vault()  # 分析完立即存檔
         return True
     return False
 
@@ -104,7 +124,7 @@ st.title("🏛️ 2026 專業美股投資評比系統")
 selected_sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()))
 selected_stock = st.sidebar.selectbox("選擇股票", SECTORS[selected_sector])
 
-# 【精準初始化：僅在該股完全沒紀錄時才建立】
+# 精準初始化
 if selected_stock not in st.session_state.stock_vault:
     st.session_state.stock_vault[selected_stock] = {
         "manual": {"Policy": 50, "Moat": 50},
@@ -112,10 +132,11 @@ if selected_stock not in st.session_state.stock_vault:
         "insight": None
     }
 
-# 手動評分同步函數
+# 手動評分同步並存檔
 def sync_vault():
     st.session_state.stock_vault[selected_stock]["manual"]["Policy"] = st.session_state[f"{selected_stock}_p"]
     st.session_state.stock_vault[selected_stock]["manual"]["Moat"] = st.session_state[f"{selected_stock}_m"]
+    save_vault()  # 滑動 Slider 後立即存檔
 
 st.sidebar.subheader("✏️ 2026 手動評分")
 vault_m = st.session_state.stock_vault[selected_stock]["manual"]
@@ -155,17 +176,26 @@ if info:
     c2.metric("前瞻 PE", info.get("forwardPE", "N/A"))
     c3.metric("狀態", "AI 已優化" if s_data["insight"] else "預設模式")
 
-    with st.expander("🏭 查看產業橫向排序 (即時計算)"):
+    with st.expander("🏭 查看產業橫向排序 (包含已存檔數據)"):
         compare_list = []
         for s in SECTORS[selected_sector]:
             s_info = get_stock_data(s)
-            # 取得該股在 Vault 中的現有數據，若無則用預設值參與計算
             s_v = st.session_state.stock_vault.get(s, {"manual": {"Policy": 50, "Moat": 50}, "weights": DEFAULT_WEIGHTS.copy()})
             if s_info:
                 s_total = calculate_score(s_info, s_v["weights"], s_v["manual"])
                 compare_list.append({
                     "股票": s, "綜合分數": s_total, 
+                    "前瞻PE": s_info.get("forwardPE"),
                     "政策得分": s_v["manual"]["Policy"], "護城河": s_v["manual"]["Moat"],
-                    "權重狀態": "AI 優化" if st.session_state.stock_vault.get(s, {}).get("insight") else "預設"
+                    "權重狀態": "AI 優化" if "insight" in s_v and s_v["insight"] else "預設"
                 })
-        st.dataframe(pd.DataFrame(compare_list).sort_values("綜合分數", ascending=False), use_container_width=True)
+        if compare_list:
+            st.dataframe(pd.DataFrame(compare_list).sort_values("綜合分數", ascending=False), use_container_width=True)
+
+---
+### 更新說明：
+1.  **檔案存儲**：新增 `investment_vault_2026.json` 作為本地資料庫。只要這個檔案在，您的設定就不會丟失。
+2.  **自動讀取**：程式啟動時會檢查檔案，如果有舊數據就直接載入到 `st.session_state.stock_vault`。
+3.  **即時儲存**：在 AI 分析完成時、以及您滑動「政策」或「護城河」Slider 時，都會立刻調用 `save_vault()`。
+
+請問您需要我針對 2026 年特定的政府補貼政策（如能源晶片法案後續）為您預設一些產業初始分數嗎？
