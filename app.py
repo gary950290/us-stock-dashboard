@@ -27,7 +27,7 @@ except:
     st.stop()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "gpt-4o-mini"
+OPENROUTER_MODEL = "qwen/qwen3-coder:free"
 
 # =========================
 # 狀態檔工具
