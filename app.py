@@ -1,164 +1,169 @@
 import streamlit as st
-import requests
-import json
+import pandas as pd
+import yfinance as yf
 import time
 from datetime import datetime
-import yfinance as yf
-import pandas as pd
+import json
+import os
+import requests
 
 # =========================
 # 基本設定
 # =========================
-st.set_page_config(
-    page_title="美股投資分析系統（OpenRouter）",
-    layout="wide"
-)
-
-st.title("📊 美股投資分析系統（OpenRouter / DeepSeek）")
-
-# =========================
-# 常數設定
-# =========================
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL_PRIMARY = "deepseek/deepseek-r1:free"
-MODEL_BACKUP = "mistralai/mistral-7b-instruct"
 MAX_RETRIES = 3
-TIMEOUT = 30
+STATE_FILE = "user_state.json"
+
+st.set_page_config(page_title="2026 專業美股投資評比系統", layout="wide")
+st.title("🏛️ 2026 專業美股投資評比系統")
+st.caption("基於 FCF 安全性、前瞻估值與產業專屬邏輯的量化分析儀表板")
 
 # =========================
-# API Key
+# OpenRouter 設定
 # =========================
-if "OPENROUTER_API_KEY" not in st.secrets:
-    st.error("❌ 未設定 OPENROUTER_API_KEY（請放入 .streamlit/secrets.toml）")
+try:
+    OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
+except:
+    st.error("❌ 找不到 OPENROUTER_API_KEY")
     st.stop()
 
-OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "deepseek/deepseek-r1:free"
 
 # =========================
-# OpenRouter 呼叫函式（含 fallback）
+# 狀態檔工具
 # =========================
-def call_openrouter(prompt, model):
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {"weights": {}, "manual_scores": {}}
+
+def save_state():
+    with open(STATE_FILE, "w") as f:
+        json.dump(
+            {
+                "weights": st.session_state.weights,
+                "manual_scores": st.session_state.manual_scores
+            },
+            f,
+            indent=2
+        )
+
+# =========================
+# 初始化狀態
+# =========================
+persisted = load_state()
+
+# =========================
+# 產業池
+# =========================
+SECTORS = {
+    "Mag7": ["AAPL","MSFT","GOOGL","AMZN","META","NVDA","TSLA"],
+    "資安": ["CRWD","PANW","ZS","OKTA","FTNT","S"],
+    "半導體": ["NVDA","AMD","INTC","TSM","AVGO"],
+    "能源": ["TSLA","CEG","FLNC","NEE","ENPH","VST","SMR"],
+    "NeoCloud": ["NBIS","IREN","APLD"]
+}
+
+SECTOR_CONFIG = {
+    "Mag7": {"weights": {"Valuation":0.25,"Quality":0.25,"Growth":0.30,"MoatPolicy":0.20}},
+    "資安": {"weights": {"Valuation":0.20,"Quality":0.30,"Growth":0.30,"MoatPolicy":0.20}},
+    "能源": {"weights": {"Valuation":0.15,"Quality":0.35,"Growth":0.15,"MoatPolicy":0.35}},
+    "半導體": {"weights": {"Valuation":0.30,"Quality":0.25,"Growth":0.30,"MoatPolicy":0.15}},
+    "NeoCloud": {"weights": {"Valuation":0.10,"Quality":0.15,"Growth":0.60,"MoatPolicy":0.15}}
+}
+
+# =========================
+# Session 初始化（含持久化）
+# =========================
+if "weights" not in st.session_state:
+    st.session_state.weights = persisted.get("weights", {})
+    for s in SECTORS:
+        if s not in st.session_state.weights:
+            st.session_state.weights[s] = SECTOR_CONFIG[s]["weights"].copy()
+
+if "manual_scores" not in st.session_state:
+    st.session_state.manual_scores = persisted.get("manual_scores", {})
+
+# =========================
+# OpenRouter 呼叫
+# =========================
+def call_openrouter(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-
     payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "你是資深美股投資分析師，請用結構化方式回答"},
-            {"role": "user", "content": prompt}
-        ],
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3
     }
-
-    response = requests.post(
-        OPENROUTER_API_URL,
-        headers=headers,
-        data=json.dumps(payload),
-        timeout=TIMEOUT
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
-
-
-def llm_analyze(prompt):
-    last_error = None
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            return call_openrouter(prompt, MODEL_PRIMARY)
-        except Exception as e:
-            last_error = e
-            time.sleep(1)
-
-    # fallback model
-    try:
-        return call_openrouter(prompt, MODEL_BACKUP)
-    except Exception as e:
-        st.error("❌ LLM 呼叫失敗")
-        st.exception(e)
-        raise last_error
-
+    r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    content = r.json()["choices"][0]["message"]["content"]
+    return json.loads(content)
 
 # =========================
-# 股票資料抓取
+# Sidebar
 # =========================
-def fetch_stock_basic(ticker):
-    stock = yf.Ticker(ticker)
-    info = stock.info
-
-    return {
-        "公司名稱": info.get("longName"),
-        "產業": info.get("industry"),
-        "市值": info.get("marketCap"),
-        "PE": info.get("trailingPE"),
-        "ROE": info.get("returnOnEquity"),
-        "毛利率": info.get("grossMargins"),
-        "營業利益率": info.get("operatingMargins"),
-    }
-
+st.sidebar.header("⚙️ 2026 評比設定")
+selected_sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()))
+selected_stock = st.sidebar.selectbox("選擇股票", SECTORS[selected_sector])
 
 # =========================
-# UI
+# 手動評分（持久化）
 # =========================
-st.sidebar.header("⚙️ 分析設定")
+if selected_stock not in st.session_state.manual_scores:
+    st.session_state.manual_scores[selected_stock] = {"Policy":50,"Moat":50}
 
-ticker = st.sidebar.text_input(
-    "輸入美股代號（例如：AAPL、NVDA、MSFT）",
-    value="AAPL"
+policy = st.sidebar.slider(
+    "政策受益度",
+    0,100,
+    st.session_state.manual_scores[selected_stock]["Policy"]
+)
+moat = st.sidebar.slider(
+    "護城河粘性",
+    0,100,
+    st.session_state.manual_scores[selected_stock]["Moat"]
 )
 
-analyze_btn = st.sidebar.button("🚀 開始分析")
+st.session_state.manual_scores[selected_stock] = {
+    "Policy": policy,
+    "Moat": moat
+}
+save_state()
 
 # =========================
-# 主流程
+# 單股 AI 分析
 # =========================
-if analyze_btn:
-    with st.spinner("📡 抓取股票資料中..."):
-        try:
-            stock_data = fetch_stock_basic(ticker)
-        except Exception as e:
-            st.error("❌ 股票資料抓取失敗")
-            st.exception(e)
-            st.stop()
-
-    st.subheader("📌 基本面資料")
-    st.json(stock_data)
-
+if st.sidebar.button("🤖 AI 分析單一股票（調整權重）"):
     prompt = f"""
-請針對以下公司進行中長期投資分析（1~3 年）：
-
-公司基本資料：
-{json.dumps(stock_data, ensure_ascii=False, indent=2)}
-
-請輸出以下結構（JSON）：
-{{
-  "投資結論": "...",
-  "成長動能": ["...", "..."],
-  "主要風險": ["...", "..."],
-  "估值觀點": "...",
-  "是否適合中長期投資": "是 / 否 / 中立"
-}}
-"""
-
-    with st.spinner("🤖 LLM 投資分析中（DeepSeek）..."):
-        result_text = llm_analyze(prompt)
-
-    st.subheader("🧠 AI 投資分析結果")
-
-    # 嘗試解析 JSON
-    try:
-        result_json = json.loads(result_text)
-        st.json(result_json)
-    except:
-        st.warning("⚠️ 無法解析為 JSON，顯示原始文字")
-        st.write(result_text)
-
-    st.caption(f"分析時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    請針對 {selected_stock}（{selected_sector}）給 2026 投資視角，
+    並建議 Valuation / Quality / Growth / MoatPolicy 權重（總和=1），
+    僅輸出 JSON。
+    """
+    insight = call_openrouter(prompt)
+    st.session_state.weights[selected_sector] = insight["suggested_weights"]
+    save_state()
+    st.success("✅ 權重已更新並永久保存")
 
 # =========================
-# Footer
+# ⭐ 全產業一鍵 AI 權重分析
 # =========================
-st.markdown("---")
-st.caption("Powered by OpenRouter + DeepSeek (free tier)")
+if st.sidebar.button("🏭 AI 分析整個產業（全股票）"):
+    with st.status("AI 分析整個產業中...", expanded=True):
+        prompt = f"""
+        你是美股基金經理，請針對 {selected_sector} 產業 2026 前景，
+        給出最適合該產業的 Valuation / Quality / Growth / MoatPolicy 權重（總和=1）
+        僅輸出 JSON。
+        """
+        insight = call_openrouter(prompt)
+        st.session_state.weights[selected_sector] = insight["suggested_weights"]
+        save_state()
+        st.success("✅ 產業權重已更新並保存")
+
+# =========================
+# 顯示目前權重
+# =========================
+st.subheader(f"📌 {selected_sector} 當前權重（已持久化）")
+st.json(st.session_state.weights[selected_sector])
