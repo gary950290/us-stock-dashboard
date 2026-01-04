@@ -401,6 +401,3 @@ if info:
         st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False))
 else:
     st.error("無法獲取股票數據")
-
-else:
-    st.error("無法獲取數據，請檢查 API 或代碼。")
