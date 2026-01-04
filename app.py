@@ -141,7 +141,13 @@ if m_policy != st.session_state.manual_scores[selected_stock]["Policy"] or \
 if st.sidebar.button("🤖 啟動 2026 深度新聞分析 (8則)"):
     with st.status(f"正在對 {selected_stock} 進行深度評估...", expanded=True) as status:
         info, news = get_stock_data(selected_stock)
-        news_titles = [f"- {n['title']}" for n in news[:8]]
+        # 安全地提取標題，若無 'title' 鍵則跳過或顯示未知
+news_titles = [f"- {n['title']}" for n in news[:8] if isinstance(n, dict) and 'title' in n]
+
+# 如果完全沒有新聞標題，給予預設值避免後續 AI prompt 空白
+if not news_titles:
+    news_titles = ["暫無相關新聞標題"]
+
         news_context = "\n".join(news_titles)
         
         prompt = f"""
