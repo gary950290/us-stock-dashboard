@@ -27,7 +27,7 @@ except:
     st.stop()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "deepseek/deepseek-r1:free"
+OPENROUTER_MODEL = "gpt-4o-mini"
 
 # =========================
 # 狀態檔工具
