@@ -2,13 +2,27 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
+import google.generativeai as genai
+import json
+
+# =========================
+# 初始化 Gemini API
+# =========================
+try:
+    gemini_key = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+except Exception as e:
+    st.error("❌ 找不到 GEMINI_API_KEY。請在 Streamlit Secrets 中設定。")
+    st.stop()
 
 # =========================
 # 設定
 # =========================
-st.set_page_config(page_title="美股分析儀表板", layout="wide")
-st.title("📊 美股分析儀表板（產業專屬評分 + 行業動態PE/ROE）")
+st.set_page_config(page_title="2026 專業美股投資評比系統", layout="wide")
+st.title("🏛️ 2026 專業美股投資評比系統")
+st.caption("基於 FCF 安全性、前瞻估值與產業專屬邏輯的量化分析儀表板")
 
 # =========================
 # 產業股票池
@@ -22,470 +36,217 @@ SECTORS = {
 }
 
 # =========================
-# 護城河資料（擴充版）
-# ==========================
-COMPANY_MOAT_DATA = {
-    # Mag7
-    "AAPL":{"retention":0.95,"switching":0.9,"patent":0.8,"network":1.0},
-    "MSFT":{"retention":0.92,"switching":0.85,"patent":0.7,"network":0.9},
-    "GOOGL":{"retention":0.9,"switching":0.8,"patent":0.75,"network":0.95},
-    "AMZN":{"retention":0.85,"switching":0.7,"patent":0.7,"network":0.9},
-    "META":{"retention":0.8,"switching":0.6,"patent":0.6,"network":0.85},
-    "NVDA":{"retention":0.9,"switching":0.8,"patent":0.95,"network":0.8},
-    "TSLA":{"retention":0.85,"switching":0.6,"patent":0.7,"network":0.7},
-    # 資安
-    "CRWD":{"retention":0.88,"switching":0.82,"patent":0.75,"network":0.8},
-    "PANW":{"retention":0.85,"switching":0.8,"patent":0.78,"network":0.75},
-    "ZS":{"retention":0.82,"switching":0.78,"patent":0.7,"network":0.8},
-    "OKTA":{"retention":0.8,"switching":0.75,"patent":0.65,"network":0.75},
-    "FTNT":{"retention":0.83,"switching":0.77,"patent":0.72,"network":0.7},
-    "S":{"retention":0.78,"switching":0.72,"patent":0.68,"network":0.72},
-    # 半導體
-    "AMD":{"retention":0.82,"switching":0.75,"patent":0.88,"network":0.7},
-    "INTC":{"retention":0.8,"switching":0.72,"patent":0.85,"network":0.68},
-    "TSM":{"retention":0.9,"switching":0.85,"patent":0.92,"network":0.75},
-    "AVGO":{"retention":0.85,"switching":0.78,"patent":0.9,"network":0.73},
-    # 能源
-    "CEG":{"retention":0.75,"switching":0.7,"patent":0.65,"network":0.6},
-    "FLNC":{"retention":0.7,"switching":0.65,"patent":0.75,"network":0.55},
-    "TE":{"retention":0.72,"switching":0.68,"patent":0.7,"network":0.58},
-    "NEE":{"retention":0.8,"switching":0.75,"patent":0.65,"network":0.65},
-    "ENPH":{"retention":0.73,"switching":0.68,"patent":0.78,"network":0.6},
-    "EOSE":{"retention":0.65,"switching":0.6,"patent":0.7,"network":0.5},
-    "VST":{"retention":0.77,"switching":0.72,"patent":0.68,"network":0.62},
-    "PLUG":{"retention":0.68,"switching":0.63,"patent":0.72,"network":0.55},
-    "OKLO":{"retention":0.7,"switching":0.65,"patent":0.8,"network":0.58},
-    "SMR":{"retention":0.72,"switching":0.67,"patent":0.82,"network":0.6},
-    "BE":{"retention":0.69,"switching":0.64,"patent":0.73,"network":0.56},
-    "GEV":{"retention":0.71,"switching":0.66,"patent":0.75,"network":0.57},
-    # NeoCloud
-    "NBIS":{"retention":0.65,"switching":0.6,"patent":0.55,"network":0.7},
-    "IREN":{"retention":0.63,"switching":0.58,"patent":0.52,"network":0.68},
-    "CRWV":{"retention":0.62,"switching":0.57,"patent":0.5,"network":0.67},
-    "APLD":{"retention":0.64,"switching":0.59,"patent":0.53,"network":0.69},
-}
-
-MOAT_WEIGHTS={"retention":0.4,"switching":0.3,"patent":0.2,"network":0.1}
-
+# 核心權重配置 (2026 邏輯)
 # =========================
-# 側邊欄設定
-# =========================
-st.sidebar.header("⚙️ 分析設定")
-mode = st.sidebar.selectbox("選擇模式",["產業共同比較","單一股票分析"])
-style = st.sidebar.selectbox("投資風格",["穩健型","成長型","平衡型"],index=2)
-
-# 產業專屬權重配置
-SECTOR_WEIGHTS = {
+SECTOR_CONFIG = {
     "Mag7": {
-        "穩健型":{"PE":0.35,"ROE":0.25,"Policy":0.15,"Moat":0.2,"Growth":0.05},
-        "成長型":{"PE":0.2,"ROE":0.2,"Policy":0.2,"Moat":0.15,"Growth":0.25},
-        "平衡型":{"PE":0.28,"ROE":0.22,"Policy":0.18,"Moat":0.18,"Growth":0.14}
+        "weights": {"Valuation": 0.25, "Quality": 0.25, "Growth": 0.30, "MoatPolicy": 0.20},
+        "focus": "AI 變現效率與現金流"
     },
     "資安": {
-        "穩健型":{"PE":0.3,"ROE":0.25,"Policy":0.2,"Moat":0.15,"Growth":0.1},
-        "成長型":{"PE":0.15,"ROE":0.2,"Policy":0.25,"Moat":0.1,"Growth":0.3},
-        "平衡型":{"PE":0.25,"ROE":0.22,"Policy":0.23,"Moat":0.13,"Growth":0.17}
-    },
-    "半導體": {
-        "穩健型":{"PE":0.35,"ROE":0.3,"Policy":0.15,"Moat":0.15,"Growth":0.05},
-        "成長型":{"PE":0.2,"ROE":0.2,"Policy":0.2,"Moat":0.1,"Growth":0.3},
-        "平衡型":{"PE":0.28,"ROE":0.25,"Policy":0.18,"Moat":0.13,"Growth":0.16}
+        "weights": {"Valuation": 0.20, "Quality": 0.30, "Growth": 0.30, "MoatPolicy": 0.20},
+        "focus": "毛利率與平台定價權"
     },
     "能源": {
-        "穩健型":{"PE":0.25,"ROE":0.2,"Policy":0.35,"Moat":0.15,"Growth":0.05},
-        "成長型":{"PE":0.15,"ROE":0.15,"Policy":0.3,"Moat":0.1,"Growth":0.3},
-        "平衡型":{"PE":0.2,"ROE":0.18,"Policy":0.32,"Moat":0.13,"Growth":0.17}
+        "weights": {"Valuation": 0.15, "Quality": 0.35, "Growth": 0.15, "MoatPolicy": 0.35},
+        "focus": "FCF 與政策補貼"
+    },
+    "半導體": {
+        "weights": {"Valuation": 0.30, "Quality": 0.25, "Growth": 0.30, "MoatPolicy": 0.15},
+        "focus": "前瞻盈餘與製程領先"
     },
     "NeoCloud": {
-        "穩健型":{"PE":0.3,"ROE":0.25,"Policy":0.2,"Moat":0.1,"Growth":0.15},
-        "成長型":{"PE":0.15,"ROE":0.2,"Policy":0.15,"Moat":0.05,"Growth":0.45},
-        "平衡型":{"PE":0.23,"ROE":0.22,"Policy":0.18,"Moat":0.08,"Growth":0.29}
+        "weights": {"Valuation": 0.10, "Quality": 0.15, "Growth": 0.60, "MoatPolicy": 0.15},
+        "focus": "未來規模與成長寬容度"
     }
 }
 
 # =========================
-# 快取工具函數（改進版）
+# 工具函數
 # =========================
-@st.cache_data(ttl=300)  # 5分鐘快取
-def get_price_safe(symbol, retry=3, delay=2):
-    """安全獲取股價，帶重試機制"""
-    for attempt in range(retry):
-        try:
-            info = yf.Ticker(symbol).info
-            return info.get("currentPrice"), info.get("regularMarketChangePercent")
-        except Exception as e:
-            if attempt < retry - 1:
-                time.sleep(delay * (attempt + 1))  # 遞增延遲
-            else:
-                return None, None
-    return None, None
-
 @st.cache_data(ttl=300)
-def get_fundamentals_safe(symbol, retry=3, delay=2):
-    """安全獲取基本面數據，帶重試機制"""
-    for attempt in range(retry):
-        try:
-            info = yf.Ticker(symbol).info
-            data = {
-                "股價": info.get("currentPrice"),
-                "PE": info.get("trailingPE"),
-                "Forward PE": info.get("forwardPE"),
-                "EPS": info.get("trailingEps"),
-                "ROE": info.get("returnOnEquity"),
-                "市值": info.get("marketCap"),
-                "FCF": info.get("freeCashflow"),
-                "營收成長": info.get("revenueGrowth"),
-                "毛利率": info.get("grossMargins"),
-                "營業利潤率": info.get("operatingMargins")
-            }
-            return pd.DataFrame(data.items(), columns=["指標", "數值"])
-        except Exception as e:
-            if attempt < retry - 1:
-                time.sleep(delay * (attempt + 1))
-            else:
-                return pd.DataFrame()
-    return pd.DataFrame()
+def get_stock_data(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        return ticker.info
+    except:
+        return None
 
-def format_large_numbers(value):
-    if isinstance(value,(int,float)) and value is not None:
-        if value>=1e9:
-            return f"{value/1e9:.2f} B"
-        elif value>=1e6:
-            return f"{value/1e6:.2f} M"
-        else:
-            return f"{value:.2f}"
-    return value
+def get_tier(score):
+    if score >= 80: return "Tier 1 (強烈優先配置) 🚀"
+    elif score >= 60: return "Tier 2 (穩健配置) ⚖️"
+    else: return "Tier 3 (觀察或減碼) ⚠️"
 
-def calculate_moat(symbol):
-    data=COMPANY_MOAT_DATA.get(symbol,{"retention":0.5,"switching":0.5,"patent":0.5,"network":0.5})
-    score=sum([data[k]*MOAT_WEIGHTS[k] for k in MOAT_WEIGHTS])*100
-    return round(score,2)
-
-def get_score_color(score):
-    """根據分數返回顏色"""
-    if score >= 80:
-        return "🟢"
-    elif score >= 60:
-        return "🟡"
-    elif score >= 40:
-        return "🟠"
-    else:
-        return "🔴"
-
-def compute_sector_specific_scores(row, sector, manual_scores=None, sector_avg_pe=None, sector_avg_roe=None, style="平衡型"):
-    """
-    根據產業特性計算專屬評分
-    """
-    PE = row.get("PE")
-    ROE = row.get("ROE")
-    FCF = row.get("FCF")
-    revenue_growth = row.get("營收成長")
-    gross_margin = row.get("毛利率")
-    operating_margin = row.get("營業利潤率")
-    symbol = row["股票"]
+# =========================
+# 評分引擎 (2026 專業邏輯)
+# =========================
+def calculate_2026_score(info, sector, manual_scores, sector_avg_data):
+    symbol = info.get("symbol")
     
-    # PE評分（動態比較）
-    PE_score = 50
-    if PE is not None and sector_avg_pe is not None and sector_avg_pe > 0:
-        if sector == "Mag7":
-            PE_score = max(0, min(100, (sector_avg_pe - PE) / sector_avg_pe * 100))
-        elif sector == "資安":
-            PE_score = max(0, min(100, (sector_avg_pe * 1.2 - PE) / (sector_avg_pe * 1.2) * 100))
-        elif sector == "半導體":
-            PE_score = max(0, min(100, (sector_avg_pe - PE) / sector_avg_pe * 120))
-        elif sector == "能源":
-            PE_score = max(0, min(100, (sector_avg_pe - PE) / sector_avg_pe * 100))
-        elif sector == "NeoCloud":
-            PE_score = max(0, min(100, (sector_avg_pe * 1.5 - PE) / (sector_avg_pe * 1.5) * 100))
+    # 1. 前瞻估值 (Valuation)
+    fwd_pe = info.get("forwardPE")
+    avg_fwd_pe = sector_avg_data.get("avg_fwd_pe", 25)
+    val_score = 50
+    if fwd_pe:
+        # 標準化：個股 Fwd PE / 產業平均
+        val_score = max(0, min(100, (avg_fwd_pe / fwd_pe) * 50))
+        if sector == "Mag7" and fwd_pe < avg_fwd_pe * 0.9: # 低於均值 10% 以上
+            val_score = min(100, val_score * 1.2)
     
-    # ROE評分（動態比較 + 產業特性）
-    ROE_score = 50
-    if ROE is not None and sector_avg_roe is not None and sector_avg_roe > 0:
-        base_roe_score = min(max(ROE / sector_avg_roe * 100, 0), 100)
+    # 2. 獲利質量 (Quality)
+    roe = info.get("returnOnEquity", 0)
+    fcf = info.get("freeCashflow", 0)
+    gross_margin = info.get("grossMargins", 0)
+    op_margin = info.get("operatingMargins", 0)
+    
+    qual_score = 50
+    if sector == "Mag7":
+        qual_score = max(0, min(100, roe * 400))
+    elif sector == "資安":
+        qual_score = max(0, min(100, gross_margin * 100))
+        if gross_margin > 0.75: qual_score += 20 # 75% 毛利溢價
+    elif sector == "能源":
+        qual_score = 100 if fcf > 0 else 50
+        if fcf < 0: qual_score -= 50 # FCF 為負硬性扣減
+    elif sector == "半導體":
+        qual_score = max(0, min(100, op_margin * 300))
+    elif sector == "NeoCloud":
+        qual_score = 50 # 關注 Burn Rate，預設中性
         
-        if sector == "Mag7":
-            ROE_score = base_roe_score * 1.1 if ROE > 0.2 else base_roe_score
-        elif sector == "資安":
-            ROE_score = base_roe_score * 1.05 if ROE > 0.15 else base_roe_score * 0.95
-        elif sector == "半導體":
-            ROE_score = base_roe_score
-        elif sector == "能源":
-            ROE_score = base_roe_score * 1.15 if ROE > 0.1 else base_roe_score * 0.9
-        elif sector == "NeoCloud":
-            ROE_score = base_roe_score * 0.9 if ROE and ROE < 0 else base_roe_score
-        
-        ROE_score = min(max(ROE_score, 0), 100)
+    # 3. 成長動能 (Growth)
+    rev_growth = info.get("revenueGrowth", 0)
+    growth_score = max(0, min(100, rev_growth * 200))
     
-    # FCF調整
-    if FCF is not None and isinstance(FCF, (int, float)):
-        if sector == "能源" or sector == "半導體":
-            if FCF < 0:
-                ROE_score *= 0.7
-        elif sector == "資安" or sector == "NeoCloud":
-            if FCF < 0:
-                ROE_score *= 0.9
+    if sector == "Mag7" and rev_growth > 0.2: growth_score *= 1.2
+    if sector == "NeoCloud" and rev_growth > 0.4: growth_score = 100
     
-    # 利潤率加分
-    if sector == "資安" and gross_margin and gross_margin > 0.7:
-        ROE_score = min(ROE_score * 1.1, 100)
-    if sector == "半導體" and operating_margin and operating_margin > 0.25:
-        ROE_score = min(ROE_score * 1.08, 100)
+    # 4. 政策與護城河 (MoatPolicy)
+    policy_score = manual_scores.get("Policy", 50)
+    moat_score = manual_scores.get("Moat", 50)
+    moat_policy_score = (policy_score + moat_score) / 2
     
-    # 手動評分
-    Policy_score = 50
-    Moat_score = calculate_moat(symbol)
-    Growth_score = 50
-    
-    if manual_scores and symbol in manual_scores:
-        Policy_score = manual_scores[symbol].get("Policy_score", Policy_score)
-        Moat_score = manual_scores[symbol].get("Moat_score", Moat_score)
-        Growth_score = manual_scores[symbol].get("Growth_score", Growth_score)
-    
-    # 成長性額外調整
-    if revenue_growth and revenue_growth > 0.3 and sector in ["資安", "NeoCloud"]:
-        Growth_score = min(Growth_score * 1.15, 100)
-    
-    # 使用產業專屬權重
-    w = SECTOR_WEIGHTS.get(sector, {}).get(style, SECTOR_WEIGHTS["Mag7"][style])
-    
-    Total_score = round(
-        PE_score * w["PE"] + 
-        ROE_score * w["ROE"] + 
-        Policy_score * w["Policy"] + 
-        Moat_score * w["Moat"] + 
-        Growth_score * w["Growth"], 
-        2
+    # 5. 綜合計算
+    w = SECTOR_CONFIG[sector]["weights"]
+    total_score = (
+        val_score * w["Valuation"] +
+        qual_score * w["Quality"] +
+        growth_score * w["Growth"] +
+        moat_policy_score * w["MoatPolicy"]
     )
     
-    return round(PE_score, 2), round(ROE_score, 2), round(Policy_score, 2), round(Moat_score, 2), round(Growth_score, 2), Total_score
+    # 6. 懲罰與加成係數 (最終調整)
+    final_adjustment = 0
+    if sector == "資安" and gross_margin > 0.75: final_adjustment += 5
+    if (sector == "能源" or sector == "NeoCloud") and fcf < 0: final_adjustment -= 10
+    
+    total_score = max(0, min(100, total_score + final_adjustment))
+    
+    return {
+        "Total": round(total_score, 2),
+        "Valuation": round(val_score, 2),
+        "Quality": round(qual_score, 2),
+        "Growth": round(growth_score, 2),
+        "MoatPolicy": round(moat_policy_score, 2),
+        "Adjustment": final_adjustment
+    }
 
 # =========================
-# 初始化 session_state
+# AI 洞察 (Gemini)
 # =========================
-for sector_companies in SECTORS.values():
-    for symbol in sector_companies:
-        if f"{symbol}_policy" not in st.session_state:
-            st.session_state[f"{symbol}_policy"] = 50
-        if f"{symbol}_moat" not in st.session_state:
-            st.session_state[f"{symbol}_moat"] = calculate_moat(symbol)
-        if f"{symbol}_growth" not in st.session_state:
-            st.session_state[f"{symbol}_growth"] = 50
+def get_ai_market_insight(symbol, sector, current_weights):
+    try:
+        ticker = yf.Ticker(symbol)
+        news = ticker.news[:5]
+        news_text = "\n".join([f"- {n['title']}" for n in news])
+        
+        prompt = f"""
+        你是一位資深美股分析師。請針對 {symbol} ({sector}產業) 的最新新聞進行 2026 投資評級分析：
+        {news_text}
+        
+        請根據新聞內容，判斷對該公司的利好/利空影響，並建議是否需要微調以下權重（總和需為 1.0）：
+        {list(current_weights.keys())}
+        
+        請嚴格以 JSON 格式回覆：
+        {{
+            "sentiment": "利好" | "利空" | "中性",
+            "summary": "簡短總結",
+            "suggested_weights": {{ "Valuation": float, "Quality": float, "Growth": float, "MoatPolicy": float }},
+            "reason": "理由"
+        }}
+        """
+        response = model.generate_content(prompt)
+        clean_json = response.text.replace('```json', '').replace('```', '').strip()
+        return json.loads(clean_json)
+    except:
+        return None
 
 # =========================
-# 單一股票分析
+# UI 佈局
 # =========================
-if mode == "單一股票分析":
-    symbol = st.sidebar.text_input("輸入美股代碼", "NVDA")
-    st.subheader(f"📌 {symbol} 分析")
+st.sidebar.header("⚙️ 2026 評比設定")
+selected_sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()))
+selected_stock = st.sidebar.selectbox("選擇股票", SECTORS[selected_sector])
+
+if "weights" not in st.session_state:
+    st.session_state.weights = {s: SECTOR_CONFIG[s]["weights"].copy() for s in SECTORS.keys()}
+
+# 手動評分
+st.sidebar.subheader("✏️ 手動評分 (20%)")
+m_policy = st.sidebar.slider("政策受益度", 0, 100, 50, key=f"{selected_stock}_p")
+m_moat = st.sidebar.slider("護城河粘性", 0, 100, 50, key=f"{selected_stock}_m")
+
+if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
+    with st.spinner("Gemini 正在分析 2026 投資影響..."):
+        insight = get_ai_market_insight(selected_stock, selected_sector, st.session_state.weights[selected_sector])
+        if insight:
+            st.session_state.last_insight = insight
+            st.session_state.weights[selected_sector] = insight["suggested_weights"]
+
+# 顯示 AI 洞察
+if "last_insight" in st.session_state:
+    ins = st.session_state.last_insight
+    st.info(f"### AI 2026 投資洞察 ({ins['sentiment']})\n**總結**: {ins['summary']}\n\n**權重調整理由**: {ins['reason']}")
+
+# 獲取數據並計算
+info = get_stock_data(selected_stock)
+if info:
+    # 模擬產業平均數據 (實際應從多股平均獲取)
+    sector_avg_data = {"avg_fwd_pe": 25} 
     
-    sector_found = None
-    for sector_name, stocks in SECTORS.items():
-        if symbol in stocks:
-            sector_found = sector_name
-            break
+    scores = calculate_2026_score(info, selected_sector, {"Policy": m_policy, "Moat": m_moat}, sector_avg_data)
     
-    if sector_found:
-        st.info(f"所屬產業: **{sector_found}**")
-    
-    # 獲取股價
-    price, change = get_price_safe(symbol)
-    
-    if price is not None:
-        st.metric("即時股價", f"${price:.2f}", f"{change:.2f}%" if change else "N/A")
-    else:
-        st.warning("無法獲取即時股價")
-    
-    # 獲取財報數據
-    funds_df = get_fundamentals_safe(symbol)
-    
-    if not funds_df.empty:
-        for col in ["FCF", "市值", "股價"]:
-            if col in funds_df["指標"].values:
-                funds_df.loc[funds_df["指標"] == col, "數值"] = funds_df.loc[funds_df["指標"] == col, "數值"].apply(format_large_numbers)
-        st.table(funds_df)
-    else:
-        st.warning("無法顯示財報數據")
-    
-    st.subheader("📝 手動輸入分數")
     col1, col2, col3 = st.columns(3)
-    with col1:
-        manual_policy = st.number_input("政策分數", 0, 100, key=f"{symbol}_policy")
-    with col2:
-        manual_moat = st.number_input("護城河分數", 0, 100, key=f"{symbol}_moat")
-    with col3:
-        manual_growth = st.number_input("成長分數", 0, 100, key=f"{symbol}_growth")
+    col1.metric("🎯 綜合評分", scores["Total"])
+    col2.metric("投資評級", get_tier(scores["Total"]))
+    col3.metric("前瞻 PE", info.get("forwardPE", "N/A"))
     
-    # 行業平均
-    sector_avg_pe, sector_avg_roe = None, None
-    if sector_found:
-        pe_list = []
-        roe_list = []
-        for s in SECTORS[sector_found]:
-            df = get_fundamentals_safe(s)
-            if not df.empty:
-                pe_val = df.loc[df["指標"] == "PE", "數值"].values
-                roe_val = df.loc[df["指標"] == "ROE", "數值"].values
-                if len(pe_val) > 0 and pe_val[0]: pe_list.append(pe_val[0])
-                if len(roe_val) > 0 and roe_val[0]: roe_list.append(roe_val[0])
-            time.sleep(0.5)  # 延遲避免頻率限制
-        if pe_list: sector_avg_pe = sum(pe_list) / len(pe_list)
-        if roe_list: sector_avg_roe = sum(roe_list) / len(roe_list)
+    st.subheader(f"📊 {selected_sector} 評分維度 (焦點：{SECTOR_CONFIG[selected_sector]['focus']})")
     
-    # 準備評分數據
-    row = {"股票": symbol}
-    if not funds_df.empty:
-        for _, r in funds_df.iterrows():
-            row[r["指標"]] = r["數值"]
+    # 顯示維度細節
+    detail_data = pd.DataFrame({
+        "維度": ["前瞻估值 (Valuation)", "獲利質量 (Quality)", "成長動能 (Growth)", "政策與護城河 (MoatPolicy)"],
+        "得分": [scores["Valuation"], scores["Quality"], scores["Growth"], scores["MoatPolicy"]],
+        "權重": [st.session_state.weights[selected_sector][k] for k in ["Valuation", "Quality", "Growth", "MoatPolicy"]]
+    })
+    st.table(detail_data)
     
-    PE_s, ROE_s, Policy_s, Moat_s, Growth_s, Total_s = compute_sector_specific_scores(
-        row,
-        sector_found if sector_found else "Mag7",
-        manual_scores={symbol: {"Policy_score": manual_policy, "Moat_score": manual_moat, "Growth_score": manual_growth}},
-        sector_avg_pe=sector_avg_pe,
-        sector_avg_roe=sector_avg_roe,
-        style=style
-    )
-    
-    st.subheader("📊 評分結果")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("PE評分", f"{get_score_color(PE_s)} {PE_s}")
-        st.metric("ROE評分", f"{get_score_color(ROE_s)} {ROE_s}")
-    with col2:
-        st.metric("政策評分", f"{get_score_color(Policy_s)} {Policy_s}")
-        st.metric("護城河評分", f"{get_score_color(Moat_s)} {Moat_s}")
-    with col3:
-        st.metric("成長評分", f"{get_score_color(Growth_s)} {Growth_s}")
-        st.metric("🎯 綜合分數", f"{get_score_color(Total_s)} {Total_s}")
+    if scores["Adjustment"] != 0:
+        st.warning(f"⚠️ 觸發懲罰/加成機制：總分已調整 {scores['Adjustment']} 分")
 
-# =========================
-# 產業共同比較
-# =========================
-elif mode == "產業共同比較":
-    sector = st.sidebar.selectbox("選擇產業", list(SECTORS.keys()), index=0)
-    st.subheader(f"🏭 {sector} 產業比較")
-    
-    # 顯示產業專屬權重
-    with st.expander("📋 查看產業專屬評分權重"):
-        weights_df = pd.DataFrame(SECTOR_WEIGHTS[sector]).T
-        st.dataframe(weights_df.style.format("{:.0%}"), use_container_width=True)
-    
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("✏️ 手動輸入分數")
-    
-    manual_scores = {}
-    for symbol in SECTORS[sector]:
-        with st.sidebar.expander(f"{symbol}"):
-            manual_policy = st.number_input(f"政策分數", 0, 100, key=f"{symbol}_policy")
-            manual_moat = st.number_input(f"護城河分數", 0, 100, key=f"{symbol}_moat")
-            manual_growth = st.number_input(f"成長分數", 0, 100, key=f"{symbol}_growth")
-            manual_scores[symbol] = {
-                "Policy_score": st.session_state[f"{symbol}_policy"],
-                "Moat_score": st.session_state[f"{symbol}_moat"],
-                "Growth_score": st.session_state[f"{symbol}_growth"]
-            }
-    
-    # 顯示進度條
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    # 計算行業平均 PE/ROE
-    status_text.text("正在計算產業平均值...")
-    pe_list = []
-    roe_list = []
-    total_stocks = len(SECTORS[sector])
-    
-    for idx, s in enumerate(SECTORS[sector]):
-        df = get_fundamentals_safe(s)
-        if not df.empty:
-            pe_val = df.loc[df["指標"] == "PE", "數值"].values
-            roe_val = df.loc[df["指標"] == "ROE", "數值"].values
-            if len(pe_val) > 0 and pe_val[0]: pe_list.append(pe_val[0])
-            if len(roe_val) > 0 and roe_val[0]: roe_list.append(roe_val[0])
-        progress_bar.progress((idx + 1) / total_stocks)
-        time.sleep(0.8)  # 延遲避免頻率限制
-    
-    sector_avg_pe = sum(pe_list) / len(pe_list) if pe_list else None
-    sector_avg_roe = sum(roe_list) / len(roe_list) if roe_list else None
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if sector_avg_pe:
-        st.info(f"📊 產業平均 PE: {sector_avg_pe:.2f}")
-    if sector_avg_roe:
-        st.info(f"📊 產業平均 ROE: {sector_avg_roe*100:.2f}%")
-    
-    # 收集所有股票數據
-    status_text.text("正在分析各股票...")
-    progress_bar = st.progress(0)
-    
-    rows = []
-    for idx, symbol in enumerate(SECTORS[sector]):
-        row = {"股票": symbol}
-        df = get_fundamentals_safe(symbol)
-        
-        if not df.empty:
-            for _, r in df.iterrows():
-                row[r["指標"]] = r["數值"]
-            
-            PE_s, ROE_s, Policy_s, Moat_s, Growth_s, Total_s = compute_sector_specific_scores(
-                row, sector, manual_scores, sector_avg_pe, sector_avg_roe, style
-            )
-            
-            row["PE評分"] = PE_s
-            row["ROE評分"] = ROE_s
-            row["政策評分"] = Policy_s
-            row["護城河評分"] = Moat_s
-            row["成長評分"] = Growth_s
-            row["綜合分數"] = Total_s
-            row["評級"] = get_score_color(Total_s)
-            
-            for col in ["FCF", "市值", "股價"]:
-                if col in row:
-                    row[col] = format_large_numbers(row[col])
-            
-            rows.append(row)
-        
-        progress_bar.progress((idx + 1) / total_stocks)
-        time.sleep(0.8)  # 延遲避免頻率限制
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if rows:
-        result_df = pd.DataFrame(rows)
-        result_df = result_df.sort_values("綜合分數", ascending=False)
-        
-        # 重新排序列，讓評級在最前面
-        cols = ["評級", "股票", "綜合分數", "PE評分", "ROE評分", "政策評分", "護城河評分", "成長評分"]
-        other_cols = [c for c in result_df.columns if c not in cols]
-        result_df = result_df[cols + other_cols]
-        
-        # 顯示完整表格（移除 background_gradient）
-        st.dataframe(result_df, use_container_width=True, height=600)
-        
-        # 顯示排名前三
-        st.subheader("🏆 排名前三")
-        top3 = result_df.head(3)
-        col1, col2, col3 = st.columns(3)
-        for idx, (col, (_, row)) in enumerate(zip([col1, col2, col3], top3.iterrows())):
-            with col:
-                st.markdown(f"### {['🥇', '🥈', '🥉'][idx]} {row['股票']}")
-                st.metric("綜合分數", f"{row['評級']} {row['綜合分數']}")
-                st.write(f"PE評分: {row['PE評分']}")
-                st.write(f"ROE評分: {row['ROE評分']}")
-        
-        # 下載按鈕
-        csv = result_df.to_csv(index=False, encoding='utf-8-sig')
-        st.download_button(
-            label="📥 下載結果為CSV",
-            data=csv,
-            file_name=f"{sector}_分析結果_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
-    else:
-        st.error("無法獲取任何股票數據，請稍後再試")
-
-st.sidebar.markdown("---")
-st.sidebar.info("💡 提示：如遇到請求限制，請等待幾分鐘後重試")
+    # 產業橫向比較
+    with st.expander(f"🏭 查看 {selected_sector} 產業橫向排序"):
+        results = []
+        for s in SECTORS[selected_sector]:
+            s_info = get_stock_data(s)
+            if s_info:
+                s_scores = calculate_2026_score(s_info, selected_sector, {"Policy": 50, "Moat": 50}, sector_avg_data)
+                results.append({
+                    "股票": s,
+                    "綜合分數": s_scores["Total"],
+                    "評級": get_tier(s_scores["Total"]),
+                    "Fwd PE": s_info.get("forwardPE"),
+                    "FCF": s_info.get("freeCashflow")
+                })
+        st.dataframe(pd.DataFrame(results).sort_values("綜合分數", ascending=False))
+else:
+    st.error("無法獲取股票數據")
