@@ -12,7 +12,7 @@ import json
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
 except Exception as e:
     st.error("❌ 找不到 GEMINI_API_KEY。請在 Streamlit Secrets 中設定。")
     st.stop()
