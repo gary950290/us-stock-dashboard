@@ -191,11 +191,3 @@ if info:
                 })
         if compare_list:
             st.dataframe(pd.DataFrame(compare_list).sort_values("綜合分數", ascending=False), use_container_width=True)
-
----
-### 更新說明：
-1.  **檔案存儲**：新增 `investment_vault_2026.json` 作為本地資料庫。只要這個檔案在，您的設定就不會丟失。
-2.  **自動讀取**：程式啟動時會檢查檔案，如果有舊數據就直接載入到 `st.session_state.stock_vault`。
-3.  **即時儲存**：在 AI 分析完成時、以及您滑動「政策」或「護城河」Slider 時，都會立刻調用 `save_vault()`。
-
-請問您需要我針對 2026 年特定的政府補貼政策（如能源晶片法案後續）為您預設一些產業初始分數嗎？
