@@ -176,13 +176,13 @@ def calculate_2026_score(info, sector, manual_scores, sector_avg_data):
 # AI 洞察 (Gemini)
 # =========================
 
-def call_gemini_with_retry(prompt, status_placeholder, max_retries=MAX_RETRIES):
+def call_gemini_with_retry(prompt, status, max_retries=MAX_RETRIES):
     """實作指數退避重試機制，確保 API 呼叫的穩定性。"""
     delay = 2  # 初始延遲 (秒)
     for attempt in range(max_retries):
         try:
-            # 顯示重試狀態
-            status_placeholder.warning(f"🤖 嘗試呼叫 Gemini API (第 {attempt + 1} 次嘗試)...")
+            # 顯示重試狀態，更新 status 容器內的文字
+            status.write(f"🤖 嘗試呼叫 Gemini API (第 {attempt + 1} 次嘗試)...")
             
             # 執行 API 呼叫
             response = model.generate_content(prompt)
@@ -195,23 +195,24 @@ def call_gemini_with_retry(prompt, status_placeholder, max_retries=MAX_RETRIES):
             # 嘗試解析 JSON
             insight = json.loads(clean_json)
             # 成功則立即返回
-            status_placeholder.success("✅ Gemini API 呼叫成功並解析 JSON。")
+            status.write("✅ Gemini API 呼叫成功並解析 JSON。")
             return insight
 
         except Exception as e:
             if attempt < max_retries - 1:
                 # 如果不是最後一次嘗試，等待並重試
-                status_placeholder.warning(f"⚠️ 呼叫失敗，將在 {delay} 秒後重試。錯誤類型: {type(e).__name__} - {e}")
+                status.warning(f"⚠️ 呼叫失敗，將在 {delay} 秒後重試。錯誤類型: {type(e).__name__}")
                 time.sleep(delay)
                 delay *= 2  # 指數退避
             else:
                 # 最後一次嘗試失敗，顯示最終錯誤
-                status_placeholder.error(f"❌ Gemini 分析失敗：連續重試 {max_retries} 次後仍失敗。錯誤類型: {type(e).__name__} - {e}")
+                status.error(f"❌ Gemini 分析失敗：連續重試 {max_retries} 次後仍失敗。錯誤類型: {type(e).__name__} - {e}")
                 print(f"DEBUG ERROR: call_gemini_with_retry failed after {max_retries} attempts. Error: {e}")
                 return None
     return None
 
-def get_ai_market_insight(symbol, sector, current_weights, status_placeholder):
+def get_ai_market_insight(symbol, sector, current_weights, status):
+    """準備提示詞並呼叫帶有重試機制的 API 函數。"""
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news[:5]
@@ -239,13 +240,13 @@ def get_ai_market_insight(symbol, sector, current_weights, status_placeholder):
             "reason": "理由"
         }}
         """
-        # 使用帶有重試機制的函數來呼叫 API
-        insight = call_gemini_with_retry(prompt, status_placeholder)
+        # 傳遞 status 物件給 call_gemini_with_retry
+        insight = call_gemini_with_retry(prompt, status)
         return insight
         
     except Exception as e:
         # 處理 yfinance 或其他非 API 呼叫的錯誤
-        status_placeholder.error(f"❌ 數據獲取或準備分析失敗：{e}")
+        status.error(f"❌ 數據獲取或準備分析失敗：{e}")
         print(f"DEBUG ERROR: get_ai_market_insight failed for {symbol}. Error: {e}")
         return None
 
@@ -301,23 +302,24 @@ m_moat = st.sidebar.slider(
 )
 # --- 結束手動評分持久化邏輯 ---
 
-# AI 狀態顯示區塊 (使用 st.empty() 確保 UI 不跳動)
-status_placeholder = st.empty() 
-
+# 使用 st.status 來處理所有狀態顯示
 if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
-    status_placeholder.success("✅ 按鈕已觸發：正在進入 AI 分析流程。")
     
-    with status_placeholder.container(): # 使用 container 包裝 spinner，以在結束後清空
-        with st.spinner("Gemini 正在分析 2026 投資影響..."):
-            # 傳遞 status_placeholder 讓 API 函數可以更新狀態
-            insight = get_ai_market_insight(selected_stock, selected_sector, st.session_state.weights[selected_sector], status_placeholder)
+    # 使用 st.status，它會自動處理 spinner、狀態更新和最終狀態顯示
+    with st.status("🤖 正在執行 AI 投資分析...", expanded=True) as status:
         
-    if insight:
-        st.session_state.last_insight = insight
-        st.session_state.weights[selected_sector] = insight["suggested_weights"]
-    
-    # 清除臨時狀態訊息
-    status_placeholder.empty()
+        # 傳遞 status 物件給函數，讓它能夠更新狀態
+        insight = get_ai_market_insight(selected_stock, selected_sector, st.session_state.weights[selected_sector], status)
+        
+        if insight:
+            st.session_state.last_insight = insight
+            st.session_state.weights[selected_sector] = insight["suggested_weights"]
+            # 成功完成，更新最終狀態
+            status.update(label="✅ 分析完成！評級與權重已更新。", state="complete", expanded=False)
+        else:
+            # 失敗，更新最終狀態
+            status.update(label="❌ 分析失敗：請檢查上面的錯誤訊息。", state="error")
+
 
 # 顯示 AI 洞察
 if "last_insight" in st.session_state:
