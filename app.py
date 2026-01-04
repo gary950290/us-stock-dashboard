@@ -99,6 +99,15 @@ def get_tier(score):
     elif score >= 60: return "Tier 2 (穩健配置) ⚖️"
     else: return "Tier 3 (觀察或減碼) ⚠️"
 
+def weights_are_equal(w1, w2, tolerance=0.001):
+    """比較兩個權重字典是否相等（考慮浮點數誤差）"""
+    if set(w1.keys()) != set(w2.keys()):
+        return False
+    for key in w1.keys():
+        if abs(w1[key] - w2[key]) > tolerance:
+            return False
+    return True
+
 # =========================
 # 評分引擎 (2026 專業邏輯)
 # =========================
@@ -215,7 +224,7 @@ def get_ai_market_insight(symbol, sector, current_weights, status):
     """準備提示詞並呼叫帶有重試機制的 API 函數。"""
     try:
         ticker = yf.Ticker(symbol)
-        news = ticker.news[:8]
+        news = ticker.news[:5]
         
         # 安全地提取新聞標題
         safe_news_titles = [f"- {n['title']}" for n in news if isinstance(n, dict) and 'title' in n]
@@ -264,6 +273,17 @@ if "weights" not in st.session_state:
         for stock in stocks:
             # 每支股票都有自己的權重副本
             st.session_state.weights[stock] = SECTOR_CONFIG[sector]["weights"].copy()
+
+# 初始化按個股儲存的 AI 洞察（修正問題 2）
+if "stock_insights" not in st.session_state:
+    st.session_state.stock_insights = {}
+
+# 初始化 AI 調整標記（修正問題 1）
+if "ai_adjusted" not in st.session_state:
+    st.session_state.ai_adjusted = {}
+    for sector, stocks in SECTORS.items():
+        for stock in stocks:
+            st.session_state.ai_adjusted[stock] = False
 
 # --- 手動評分持久化邏輯 ---
 
@@ -322,9 +342,12 @@ if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
         )
         
         if insight:
-            st.session_state.last_insight = insight
+            # 儲存到個股專屬的洞察（修正問題 2）
+            st.session_state.stock_insights[selected_stock] = insight
             # 只更新「當前股票」的權重
             st.session_state.weights[selected_stock] = insight["suggested_weights"]
+            # 標記該股票已被 AI 調整（修正問題 1）
+            st.session_state.ai_adjusted[selected_stock] = True
             # 成功完成，更新最終狀態
             status.update(label="✅ 分析完成！評級與權重已更新。", state="complete", expanded=False)
         else:
@@ -332,10 +355,10 @@ if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
             status.update(label="❌ 分析失敗：請檢查上面的錯誤訊息。", state="error")
 
 
-# 顯示 AI 洞察
-if "last_insight" in st.session_state:
-    ins = st.session_state.last_insight
-    st.info(f"### AI 2026 投資洞察 ({ins['sentiment']})\n**總結**: {ins['summary']}\n\n**權重調整理由**: {ins['reason']}")
+# 顯示當前股票的 AI 洞察（修正問題 2）
+if selected_stock in st.session_state.stock_insights:
+    ins = st.session_state.stock_insights[selected_stock]
+    st.info(f"### 🤖 AI 2026 投資洞察 - {selected_stock} ({ins['sentiment']})\n**總結**: {ins['summary']}\n\n**權重調整理由**: {ins['reason']}")
 
 # 獲取數據並計算
 info = get_stock_data(selected_stock)
@@ -386,8 +409,8 @@ if info:
                     st.session_state.weights[s]  # 使用個股自己的權重
                 )
                 
-                # 檢查該股票權重是否被 AI 調整過
-                is_ai_adjusted = st.session_state.weights[s] != SECTOR_CONFIG[selected_sector]["weights"]
+                # 使用明確的 AI 調整標記（修正問題 1）
+                is_ai_adjusted = st.session_state.ai_adjusted.get(s, False)
                 
                 results.append({
                     "股票": s,
