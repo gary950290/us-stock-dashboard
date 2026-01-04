@@ -154,6 +154,7 @@ def calculate_2026_score(info, sector, manual_scores, sector_avg_data):
 # AI 洞察 (Gemini)
 # =========================
 def get_ai_market_insight(symbol, sector, current_weights):
+    st.info("💡 偵錯訊息：開始嘗試獲取股票新聞和呼叫 Gemini API...") # 偵錯訊息
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news[:5]
@@ -176,8 +177,13 @@ def get_ai_market_insight(symbol, sector, current_weights):
         """
         response = model.generate_content(prompt)
         clean_json = response.text.replace('```json', '').replace('```', '').strip()
+        
+        # 嘗試解析 JSON
         return json.loads(clean_json)
-    except:
+    except Exception as e:
+        # 如果失敗，將錯誤印出來
+        st.error(f"❌ Gemini 分析失敗：{e}")
+        print(f"DEBUG ERROR: get_ai_market_insight failed for {symbol}. Error: {e}")
         return None
 
 # =========================
@@ -235,8 +241,18 @@ m_moat = st.sidebar.slider(
 # --- 【結束】手動評分持久化邏輯 ---
 
 if st.sidebar.button("🤖 啟動 AI 實時新聞分析"):
+    # --- 【偵錯點 1：立即確認按鈕觸發】 ---
+    st.success("✅ 按鈕已觸發：正在進入 AI 分析流程。")
+    # ------------------------------------
+    
     with st.spinner("Gemini 正在分析 2026 投資影響..."):
         insight = get_ai_market_insight(selected_stock, selected_sector, st.session_state.weights[selected_sector])
+        
+        # --- 【偵錯點 2：分析結果確認】 ---
+        if insight is None:
+            st.error("❌ 偵錯訊息：AI 分析程序返回空值。請檢查上方是否有錯誤訊息或控制台輸出。")
+        # ------------------------------------
+            
         if insight:
             st.session_state.last_insight = insight
             st.session_state.weights[selected_sector] = insight["suggested_weights"]
