@@ -614,7 +614,7 @@ if info:
         st.session_state.weights[selected_stock]
     )
     
-        if scores:  # 確保評分計算成功
+    if scores:  # 確保評分計算成功
         col1, col2, col3 = st.columns(3)
         col1.metric("🎯 綜合評分", scores["Total"])
         col2.metric("投資評級", get_tier(scores["Total"]))
@@ -699,4 +699,3 @@ st.caption("""
 - 升級到 Gemini API 付費方案
 - 訪問：https://ai.google.dev/pricing
 """)
-​​​​​​​​​​​​​​​​
