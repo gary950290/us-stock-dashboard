@@ -2,12 +2,56 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import google.generativeai as genai
 import json
 
 # 設定重試次數
 MAX_RETRIES = 3 
+
+# =========================
+# API 速率限制管理
+# =========================
+class APIRateLimiter:
+    """管理 Gemini API 的速率限制"""
+    def __init__(self):
+        self.last_call_time = None
+        self.call_count = 0
+        self.reset_time = None
+        
+    def wait_if_needed(self):
+        """在調用 API 前等待，避免超過速率限制"""
+        now = datetime.now()
+        
+        # 如果是新的一天，重置計數器
+        if self.reset_time and now > self.reset_time:
+            self.call_count = 0
+            self.reset_time = None
+        
+        # 如果上次調用時間不到 3 秒，等待
+        if self.last_call_time:
+            elapsed = (now - self.last_call_time).total_seconds()
+            if elapsed < 3:  # 每次調用間隔至少 3 秒
+                wait_time = 3 - elapsed
+                time.sleep(wait_time)
+        
+        self.last_call_time = datetime.now()
+        self.call_count += 1
+        
+    def record_quota_exceeded(self, retry_delay_seconds):
+        """記錄配額超出的情況"""
+        self.reset_time = datetime.now() + timedelta(seconds=retry_delay_seconds)
+        
+    def get_status(self):
+        """獲取當前狀態"""
+        return {
+            "call_count": self.call_count,
+            "reset_time": self.reset_time
+        }
+
+# 初始化速率限制器
+if "rate_limiter" not in st.session_state:
+    st.session_state.rate_limiter = APIRateLimiter()
 
 # =========================
 # 初始化 Gemini API
@@ -216,16 +260,27 @@ def calculate_2026_score(info, sector, manual_scores, sector_avg_data, stock_wei
     }
 
 # =========================
-# AI 洞察 (Gemini)
+# AI 洞察 (Gemini) - 增強版速率控制
 # =========================
 
 def call_gemini_with_retry(prompt, status, max_retries=MAX_RETRIES):
     """實作指數退避重試機制，確保 API 呼叫的穩定性。"""
     delay = 2  # 初始延遲 (秒)
+    
     for attempt in range(max_retries):
         try:
-            # 顯示重試狀態，更新 status 容器內的文字
-            status.write(f"🤖 嘗試呼叫 Gemini API (第 {attempt + 1} 次嘗試)...")
+            # 檢查速率限制
+            limiter_status = st.session_state.rate_limiter.get_status()
+            if limiter_status["reset_time"] and datetime.now() < limiter_status["reset_time"]:
+                remaining = (limiter_status["reset_time"] - datetime.now()).total_seconds()
+                status.error(f"⏳ API 配額已用盡，需等待 {int(remaining)} 秒後重試")
+                return None
+            
+            # 速率限制等待
+            st.session_state.rate_limiter.wait_if_needed()
+            
+            # 顯示重試狀態
+            status.write(f"🤖 嘗試呼叫 Gemini API (第 {attempt + 1} 次，已使用 {limiter_status['call_count']} 次)...")
             
             # 執行 API 呼叫
             response = model.generate_content(prompt)
@@ -242,15 +297,33 @@ def call_gemini_with_retry(prompt, status, max_retries=MAX_RETRIES):
             return insight
 
         except Exception as e:
+            error_str = str(e)
+            
+            # 檢查是否是配額錯誤
+            if "ResourceExhausted" in error_str or "429" in error_str or "quota" in error_str.lower():
+                # 提取重試延遲時間
+                retry_delay = 3600  # 預設 1 小時
+                if "retry_delay" in error_str:
+                    try:
+                        import re
+                        match = re.search(r'seconds: (\d+)', error_str)
+                        if match:
+                            retry_delay = int(match.group(1))
+                    except:
+                        pass
+                
+                st.session_state.rate_limiter.record_quota_exceeded(retry_delay)
+                status.error(f"⚠️ Gemini API 配額已用盡！\n\n免費版限制：每天 20 次請求\n需等待約 {retry_delay // 60} 分鐘後重試\n\n💡 建議：\n1. 使用「手動評分」功能代替 AI 分析\n2. 明天再使用批次分析功能\n3. 或升級到 Gemini API 付費方案")
+                return None
+            
+            # 其他錯誤的處理
             if attempt < max_retries - 1:
-                # 如果不是最後一次嘗試，等待並重試
-                status.warning(f"⚠️ 呼叫失敗，將在 {delay} 秒後重試。錯誤類型: {type(e).__name__}")
+                status.warning(f"⚠️ 呼叫失敗，將在 {delay} 秒後重試。錯誤: {type(e).__name__}")
                 time.sleep(delay)
                 delay *= 2  # 指數退避
             else:
-                # 最後一次嘗試失敗，顯示最終錯誤
-                status.error(f"❌ Gemini 分析失敗：連續重試 {max_retries} 次後仍失敗。錯誤類型: {type(e).__name__} - {e}")
-                print(f"DEBUG ERROR: call_gemini_with_retry failed after {max_retries} attempts. Error: {e}")
+                status.error(f"❌ Gemini 分析失敗：{type(e).__name__} - {error_str[:200]}")
+                print(f"DEBUG ERROR: call_gemini_with_retry failed. Error: {e}")
                 return None
     return None
 
@@ -305,6 +378,13 @@ def batch_analyze_sector(sector, progress_container):
     progress_bar = progress_container.progress(0)
     status_text = progress_container.empty()
     
+    # 檢查配額狀態
+    limiter_status = st.session_state.rate_limiter.get_status()
+    if limiter_status["reset_time"] and datetime.now() < limiter_status["reset_time"]:
+        remaining = (limiter_status["reset_time"] - datetime.now()).total_seconds()
+        status_text.error(f"⚠️ API 配額已用盡，需等待約 {int(remaining // 60)} 分鐘")
+        return results
+    
     for idx, stock in enumerate(stocks):
         status_text.write(f"🔍 正在分析 {stock} ({idx + 1}/{total})...")
         
@@ -342,15 +422,17 @@ def batch_analyze_sector(sector, progress_container):
                 
                 status.update(label=f"✅ {stock} 分析完成", state="complete")
             else:
-                results[stock] = {"error": "分析失敗"}
+                results[stock] = {"error": "分析失敗或配額用盡"}
                 status.update(label=f"❌ {stock} 分析失敗", state="error")
-            
-            # 為避免 API 限流，每次分析後稍作延遲
-            time.sleep(1)
+                
+                # 如果是配額問題，停止批次處理
+                if st.session_state.rate_limiter.get_status()["reset_time"]:
+                    status_text.error(f"⚠️ API 配額用盡，批次分析中止於第 {idx + 1} 個股票")
+                    break
         
         progress_bar.progress((idx + 1) / total)
     
-    status_text.write(f"✅ {sector} 產業批次分析完成！")
+    status_text.write(f"✅ {sector} 產業批次分析完成（或因配額限制提前結束）")
     return results
 
 # =========================
@@ -400,9 +482,21 @@ if "manual_scores" not in st.session_state:
 # =========================
 st.sidebar.header("⚙️ 2026 評比設定")
 
+# 顯示 API 使用狀態
+limiter_status = st.session_state.rate_limiter.get_status()
+if limiter_status["reset_time"] and datetime.now() < limiter_status["reset_time"]:
+    remaining = (limiter_status["reset_time"] - datetime.now()).total_seconds()
+    st.sidebar.error(f"⏳ API 配額已用盡\n等待時間：約 {int(remaining // 60)} 分鐘")
+else:
+    st.sidebar.info(f"📊 今日已使用 AI 分析：{limiter_status['call_count']} 次\n(免費版限制：20 次/天)")
+
 # 新增批次分析按鈕
 st.sidebar.subheader("🚀 批次 AI 分析")
 batch_sector = st.sidebar.selectbox("選擇要批次分析的產業", list(SECTORS.keys()), key="batch_sector")
+
+# 計算該產業股票數量
+sector_stock_count = len(SECTORS[batch_sector])
+st.sidebar.caption(f"該產業共 {sector_stock_count} 支股票，將使用 {sector_stock_count} 次 API 配額")
 
 if st.sidebar.button("🔥 一鍵分析整個產業", type="primary"):
     progress_container = st.sidebar.container()
@@ -413,7 +507,7 @@ if st.sidebar.button("🔥 一鍵分析整個產業", type="primary"):
     success_count = sum(1 for r in results.values() if "error" not in r)
     fail_count = len(results) - success_count
     
-    st.sidebar.success(f"✅ {batch_sector} 產業分析完成！成功: {success_count}, 失敗: {fail_count}")
+    st.sidebar.success(f"✅ 分析結束！成功: {success_count}, 失敗/跳過: {fail_count}")
 
 st.sidebar.divider()
 
@@ -440,6 +534,7 @@ moat_default = st.session_state.manual_scores[current_stock]["Moat"]
 
 # 手動評分
 st.sidebar.subheader("✏️ 手動評分 (20%)")
+st.sidebar.caption("💡 配額用盡時，可使用手動評分代替 AI 分析")
 m_policy = st.sidebar.slider(
     "政策受益度", 
     0, 
@@ -479,7 +574,7 @@ if st.sidebar.button("🤖 分析當前股票"):
             
             status.update(label="✅ 分析完成！評級與權重已更新。", state="complete", expanded=False)
         else:
-            status.update(label="❌ 分析失敗：請檢查上面的錯誤訊息。", state="error")
+            status.update(label="❌ 分析失敗或配額用盡", state="error")
 
 # 新增：清除數據按鈕
 st.sidebar.divider()
@@ -519,7 +614,7 @@ if info:
         st.session_state.weights[selected_stock]
     )
     
-    if scores:  # 確保評分計算成功
+        if scores:  # 確保評分計算成功
         col1, col2, col3 = st.columns(3)
         col1.metric("🎯 綜合評分", scores["Total"])
         col2.metric("投資評級", get_tier(scores["Total"]))
@@ -582,3 +677,26 @@ if info:
 else:
     st.error(f"❌ 無法獲取 {selected_stock} 的股票數據。請檢查：\n1. 股票代碼是否正確\n2. 網路連線是否正常\n3. 稍後再試")
     st.info("💡 提示：某些股票（特別是小型股或新上市公司）可能在 Yahoo Finance 上的數據不完整")
+
+# =========================
+# 頁面底部：API 使用說明
+# =========================
+st.divider()
+st.caption("""
+### 📌 關於 Gemini API 配額限制
+
+**免費版限制：**
+- 每天最多 20 次 AI 分析請求
+- 每次請求間隔至少 3 秒
+
+**建議使用策略：**
+1. **優先使用手動評分**：政策受益度和護城河粘性可手動調整，不消耗 API 配額
+2. **選擇性 AI 分析**：只對重點關注的股票使用 AI 分析
+3. **批次分析規劃**：如果要分析整個產業，建議選擇股票數量較少的產業（如 Mag7 只有 7 支）
+4. **明天再試**：配額每天重置，可以分散在多天進行分析
+
+**如需更多配額：**
+- 升級到 Gemini API 付費方案
+- 訪問：https://ai.google.dev/pricing
+""")
+​​​​​​​​​​​​​​​​
