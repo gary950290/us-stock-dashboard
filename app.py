@@ -8,19 +8,17 @@ import os
 
 # =========================
 
-# 0. 數據持久化配置
+# 0. Data Persistence Config
 
 # =========================
 
 VAULT_FILE = “investment_vault_2026.json”
 
 def save_vault():  
-“”“將當前 session_state 數據寫入 JSON 檔案”””  
 with open(VAULT_FILE, “w”, encoding=“utf-8”) as f:  
 json.dump(st.session_state.stock_vault, f, ensure_ascii=False, indent=4)
 
 def load_vault():  
-“”“從 JSON 檔案讀取數據，若檔案不存在則回傳空字典”””  
 if os.path.exists(VAULT_FILE):  
 try:  
 with open(VAULT_FILE, “r”, encoding=“utf-8”) as f:  
@@ -31,7 +29,7 @@ return {}
 
 # =========================
 
-# 1. OpenRouter 配置 (2026 免費模型)
+# 1. OpenRouter Config
 
 # =========================
 
@@ -45,28 +43,26 @@ OR_MODELS = [
 try:  
 OR_API_KEY = st.secrets[“OPENROUTER_API_KEY”]  
 except:  
-st.error(“❌ 找不到 OPENROUTER_API_KEY。請在 Streamlit Secrets 中設定。”)  
+st.error(“Error: OPENROUTER_API_KEY not found in secrets”)  
 st.stop()
 
 # =========================
 
-# 2. 核心配置與初始化
+# 2. Core Config
 
 # =========================
 
-st.set_page_config(page_title=“2026 專業美股投資評比系統”, layout=“wide”)
+st.set_page_config(page_title=“2026 US Stock Analysis System”, layout=“wide”)
 
 SECTORS = {  
 “Mag7”: [“AAPL”,“MSFT”,“GOOGL”,“AMZN”,“META”,“NVDA”,“TSLA”],  
-“資安”: [“CRWD”,“PANW”,“ZS”,“OKTA”,“FTNT”,“S”],  
-“半導體”: [“NVDA”,“AMD”,“INTC”,“TSM”,“AVGO”],  
-“能源”: [“TSLA”,“CEG”,“FLNC”,“TE”,“NEE”,“ENPH”,“EOSE”,“VST”,“PLUG”,“OKLO”,“SMR”,“BE”,“GEV”],  
+“Cybersecurity”: [“CRWD”,“PANW”,“ZS”,“OKTA”,“FTNT”,“S”],  
+“Semiconductor”: [“NVDA”,“AMD”,“INTC”,“TSM”,“AVGO”],  
+“Energy”: [“TSLA”,“CEG”,“FLNC”,“TE”,“NEE”,“ENPH”,“EOSE”,“VST”,“PLUG”,“OKLO”,“SMR”,“BE”,“GEV”],  
 “NeoCloud”: [“NBIS”,“IREN”,“CRWV”,“APLD”]  
 }
 
 DEFAULT_WEIGHTS = {“Valuation”: 0.25, “Quality”: 0.25, “Growth”: 0.30, “MoatPolicy”: 0.20}
-
-# 優先從檔案讀取舊有數據
 
 if “stock_vault” not in st.session_state:  
 saved_data = load_vault()  
@@ -90,7 +86,7 @@ return round(total, 2)
 
 # =========================
 
-# 3. 工具函數 (改進版)
+# 3. Utility Functions
 
 # =========================
 
@@ -99,10 +95,10 @@ def get_stock_data(symbol):
 try:  
 ticker = yf.Ticker(symbol)  
 return ticker.info  
-except: return None
+except:
+return None
 
 def call_openrouter(prompt, status, max_retries=3):  
-“”“改進版：增加重試機制和詳細錯誤日誌”””
 headers = {
 “Authorization”: f”Bearer {OR_API_KEY}”,
 “HTTP-Referer”: “http://localhost:8501”,
@@ -113,7 +109,7 @@ headers = {
 for model in OR_MODELS:  
     for attempt in range(max_retries):
         try:  
-            status.write(f"🤖 模型: {model} (嘗試 {attempt+1}/{max_retries})...")  
+            status.write(f"AI Model: {model} (Attempt {attempt+1}/{max_retries})")  
             payload = {
                 "model": model, 
                 "messages": [{"role": "user", "content": prompt}], 
@@ -128,29 +124,28 @@ for model in OR_MODELS:
             
             if res.status_code == 200:  
                 result = json.loads(res.json()['choices'][0]['message']['content'])
-                status.write(f"✅ 成功使用 {model}")
+                status.write(f"Success with {model}")
                 return result
             else:
-                status.write(f"⚠️ HTTP {res.status_code}: {res.text[:100]}")
+                status.write(f"HTTP {res.status_code}: {res.text[:100]}")
                 
         except json.JSONDecodeError as e:
-            status.write(f"⚠️ JSON 解析失敗: {str(e)[:50]}")
+            status.write(f"JSON parse error: {str(e)[:50]}")
         except requests.Timeout:
-            status.write(f"⏱️ 請求超時，重試中...")
+            status.write("Request timeout, retrying...")
         except Exception as e:
-            status.write(f"❌ 錯誤: {str(e)[:50]}")
+            status.write(f"Error: {str(e)[:50]}")
         
         if attempt < max_retries - 1:
-            time.sleep(2)  # 重試前等待2秒
+            time.sleep(2)
             
 return None  
 ```
 
 def run_ai_analysis(symbol, sector, status):  
-“”“改進版：增強錯誤處理和狀態反饋”””
 info = get_stock_data(symbol)  
 if not info:
-status.write(f”❌ {symbol}: 無法取得股票數據”)
+status.write(f”Failed to get data for {symbol}”)
 return False
 
 ```
@@ -161,58 +156,54 @@ if symbol not in st.session_state.stock_vault:
         "insight": None
     }  
   
-prompt = f"""分析 {symbol} ({sector})。
+prompt = f"""Analyze {symbol} ({sector}).
 ```
 
-數據: PE={info.get(‘forwardPE’, ‘N/A’)}, ROE={info.get(‘returnOnEquity’, ‘N/A’)}, 營收增長={info.get(‘revenueGrowth’, ‘N/A’)}。
-請根據該股票特性微調權重(四個權重總和必須=1.0)。
+Data: PE={info.get(‘forwardPE’, ‘N/A’)}, ROE={info.get(‘returnOnEquity’, ‘N/A’)}, Revenue Growth={info.get(‘revenueGrowth’, ‘N/A’)}.
+Adjust weights (must sum to 1.0).
 
-回傳JSON格式(嚴格遵守):
+Return JSON format:
 {{
-“sentiment”: “看多/中性/看空”,
-“summary”: “一句話總結投資觀點”,
+“sentiment”: “bullish/neutral/bearish”,
+“summary”: “one sentence investment thesis”,
 “suggested_weights”: {{
 “Valuation”: 0.25,
 “Quality”: 0.25,
 “Growth”: 0.30,
 “MoatPolicy”: 0.20
 }},
-“reason”: “調整權重的具體原因”
+“reason”: “explanation for weight adjustment”
 }}”””
 
 ```
 insight = call_openrouter(prompt, status)  
 if insight and "suggested_weights" in insight:  
-    # 驗證權重總和
     weights = insight["suggested_weights"]
     total = sum(weights.values())
-    if abs(total - 1.0) > 0.01:  # 容許1%誤差
-        status.write(f"⚠️ {symbol}: 權重總和={total:.2f}，自動標準化")
-        # 標準化權重
+    if abs(total - 1.0) > 0.01:
+        status.write(f"{symbol}: Weight sum={total:.2f}, normalizing")
         insight["suggested_weights"] = {k: v/total for k, v in weights.items()}
     
     st.session_state.stock_vault[symbol]["weights"] = insight["suggested_weights"]  
     st.session_state.stock_vault[symbol]["insight"] = insight  
     save_vault()
-    status.write(f"✅ {symbol}: AI分析完成並已存檔")
+    status.write(f"{symbol}: AI analysis complete and saved")
     return True
 else:
-    status.write(f"❌ {symbol}: AI分析失敗，保持預設權重")
+    status.write(f"{symbol}: AI analysis failed, keeping default weights")
     return False  
 ```
 
 # =========================
 
-# 4. UI 與 持久化邏輯
+# 4. UI
 
 # =========================
 
-st.title(“🏛️ 2026 專業美股投資評比系統”)
+st.title(“2026 Professional US Stock Analysis System”)
 
-selected_sector = st.sidebar.selectbox(“選擇產業”, list(SECTORS.keys()))  
-selected_stock = st.sidebar.selectbox(“選擇股票”, SECTORS[selected_sector])
-
-# 精準初始化
+selected_sector = st.sidebar.selectbox(“Select Sector”, list(SECTORS.keys()))  
+selected_stock = st.sidebar.selectbox(“Select Stock”, SECTORS[selected_sector])
 
 if selected_stock not in st.session_state.stock_vault:  
 st.session_state.stock_vault[selected_stock] = {  
@@ -221,43 +212,41 @@ st.session_state.stock_vault[selected_stock] = {
 “insight”: None  
 }
 
-# 手動評分同步並存檔
-
 def sync_vault():  
 st.session_state.stock_vault[selected_stock][“manual”][“Policy”] = st.session_state[f”{selected_stock}_p”]  
 st.session_state.stock_vault[selected_stock][“manual”][“Moat”] = st.session_state[f”{selected_stock}_m”]  
 save_vault()
 
-st.sidebar.subheader(“✏️ 2026 手動評分”)  
+st.sidebar.subheader(“Manual Scoring”)  
 vault_m = st.session_state.stock_vault[selected_stock][“manual”]  
-st.sidebar.slider(“政策受益度”, 0, 100, value=vault_m[“Policy”], key=f”{selected_stock}_p”, on_change=sync_vault)  
-st.sidebar.slider(“護城河粘性”, 0, 100, value=vault_m[“Moat”], key=f”{selected_stock}_m”, on_change=sync_vault)
+st.sidebar.slider(“Policy Benefit”, 0, 100, value=vault_m[“Policy”], key=f”{selected_stock}_p”, on_change=sync_vault)  
+st.sidebar.slider(“Moat Strength”, 0, 100, value=vault_m[“Moat”], key=f”{selected_stock}_m”, on_change=sync_vault)
 
 col_b1, col_b2 = st.sidebar.columns(2)  
-if col_b1.button(“🤖 單股 AI 分析”):  
-with st.status(f”分析 {selected_stock}…”, expanded=True) as status:  
+if col_b1.button(“AI Analyze Single”):  
+with st.status(f”Analyzing {selected_stock}…”, expanded=True) as status:  
 if run_ai_analysis(selected_stock, selected_sector, status):  
-status.update(label=“✅ 分析完成”, state=“complete”)  
+status.update(label=“Analysis Complete”, state=“complete”)  
 else:
-status.update(label=“⚠️ 分析遇到問題”, state=“error”)
+status.update(label=“Analysis Issue”, state=“error”)
 time.sleep(1)
 st.rerun()
 
-if col_b2.button(“🚀 一鍵分析全產業”):  
-with st.status(f”處理 {selected_sector} ({len(SECTORS[selected_sector])}支股票)…”, expanded=True) as status:  
+if col_b2.button(“Analyze All Sector”):  
+with st.status(f”Processing {selected_sector} ({len(SECTORS[selected_sector])} stocks)…”, expanded=True) as status:  
 success_count = 0
 fail_count = 0
 for idx, s in enumerate(SECTORS[selected_sector], 1):  
-status.write(f”📊 [{idx}/{len(SECTORS[selected_sector])}] 處理 {s}…”)  
+status.write(f”[{idx}/{len(SECTORS[selected_sector])}] Processing {s}…”)  
 if run_ai_analysis(s, selected_sector, status):
 success_count += 1
 else:
 fail_count += 1
-time.sleep(1)  # 避免API限流
+time.sleep(1)
 
 ```
     status.update(
-        label=f"✅ 完成！成功: {success_count} | 失敗: {fail_count}", 
+        label=f"Complete! Success: {success_count} | Failed: {fail_count}", 
         state="complete" if fail_count == 0 else "error"
     )
     time.sleep(2)
@@ -266,7 +255,7 @@ time.sleep(1)  # 避免API限流
 
 # =========================
 
-# 5. 結果呈現
+# 5. Results Display
 
 # =========================
 
@@ -278,23 +267,21 @@ total_score = calculate_score(info, s_data[“weights”], s_data[“manual”])
 ```
 if s_data["insight"]:  
     ins = s_data["insight"]  
-    st.info(f"### AI 洞察 ({ins['sentiment']}): {ins['summary']}\n**權重調整理由**: {ins['reason']}")  
+    st.info(f"### AI Insight ({ins['sentiment']}): {ins['summary']}\n**Weight Adjustment Reason**: {ins['reason']}")  
 
 c1, c2, c3 = st.columns(3)  
-c1.metric("🎯 綜合評分", total_score)  
-c2.metric("前瞻 PE", info.get("forwardPE", "N/A"))  
-c3.metric("狀態", "AI 已優化" if s_data["insight"] else "預設模式")  
+c1.metric("Overall Score", total_score)  
+c2.metric("Forward PE", info.get("forwardPE", "N/A"))  
+c3.metric("Status", "AI Optimized" if s_data["insight"] else "Default Mode")  
 
-# 顯示當前權重
-with st.expander("⚖️ 查看當前評分權重"):
+with st.expander("View Current Weights"):
     weights_df = pd.DataFrame([
-        {"維度": k, "權重": f"{v:.1%}", "數值": v} 
+        {"Dimension": k, "Weight": f"{v:.1%}", "Value": v} 
         for k, v in s_data["weights"].items()
     ])
     st.dataframe(weights_df, use_container_width=True, hide_index=True)
 
-# 改進版產業橫向比較
-with st.expander("🏭 查看產業橫向排序 (包含AI權重)", expanded=True):  
+with st.expander("Sector Comparison (with AI Weights)", expanded=True):  
     compare_list = []  
     for s in SECTORS[selected_sector]:  
         s_info = get_stock_data(s)  
@@ -305,29 +292,26 @@ with st.expander("🏭 查看產業橫向排序 (包含AI權重)", expanded=True
         })  
         if s_info:  
             s_total = calculate_score(s_info, s_v["weights"], s_v["manual"])  
-            
-            # 取得權重（顯示為百分比）
             weights = s_v["weights"]
             
             compare_list.append({  
-                "股票": s, 
-                "綜合分數": s_total,   
-                "前瞻PE": s_info.get("forwardPE", "N/A"),  
-                "政策": s_v["manual"]["Policy"], 
-                "護城河": s_v["manual"]["Moat"],
-                "估值權重": f"{weights['Valuation']:.0%}",
-                "質量權重": f"{weights['Quality']:.0%}",
-                "成長權重": f"{weights['Growth']:.0%}",
-                "護城河權重": f"{weights['MoatPolicy']:.0%}",
-                "狀態": "✅ AI優化" if s_v.get("insight") else "⚪ 預設"  
+                "Stock": s, 
+                "Score": s_total,   
+                "Fwd PE": s_info.get("forwardPE", "N/A"),  
+                "Policy": s_v["manual"]["Policy"], 
+                "Moat": s_v["manual"]["Moat"],
+                "Val%": f"{weights['Valuation']:.0%}",
+                "Qual%": f"{weights['Quality']:.0%}",
+                "Growth%": f"{weights['Growth']:.0%}",
+                "Moat%": f"{weights['MoatPolicy']:.0%}",
+                "Status": "AI" if s_v.get("insight") else "Default"  
             })  
     
     if compare_list:  
-        df = pd.DataFrame(compare_list).sort_values("綜合分數", ascending=False)
+        df = pd.DataFrame(compare_list).sort_values("Score", ascending=False)
         
-        # 使用顏色標記AI優化狀態
         def highlight_ai_optimized(row):
-            if row['狀態'] == '✅ AI優化':
+            if row['Status'] == 'AI':
                 return ['background-color: #e8f5e9'] * len(row)
             return [''] * len(row)
         
@@ -337,7 +321,6 @@ with st.expander("🏭 查看產業橫向排序 (包含AI權重)", expanded=True
             hide_index=True
         )
         
-        # 統計資訊
-        ai_count = sum(1 for item in compare_list if item['狀態'] == '✅ AI優化')
-        st.caption(f"📊 已完成 AI 優化: {ai_count}/{len(compare_list)} 支股票")
+        ai_count = sum(1 for item in compare_list if item['Status'] == 'AI')
+        st.caption(f"AI Optimized: {ai_count}/{len(compare_list)} stocks")
 ```
