@@ -30,10 +30,12 @@ def load_vault():
 # 1. OpenRouter 配置 (2026 免費模型)
 # =========================
 OR_MODELS = [  
-    "google/gemini-2.0-flash-exp:free", # 修正模型名稱建議
-    "deepseek/deepseek-r1:free",  
-    "qwen/qwen3-coder:free",  
-    "openrouter/auto"  
+    "google/gemini-2.0-flash-exp:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "qwen/qwen-2-7b-instruct:free",
+    "microsoft/phi-3-mini-128k-instruct:free",
+    "google/gemma-2-9b-it:free"  
 ]
 
 try:  
